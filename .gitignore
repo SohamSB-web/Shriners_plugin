@@ -47,17 +47,7 @@ credentials/
 *.qtmproj.*
 
 # Clinical runtime state, backups, and dumps
-variables*.json
-*.csv
-*plot*.png
-*.paf.bak
-*.ipynb
-.ipynb_checkpoints/
-**/saves/
-**/Messages/
-**/work/
-**/DisplayFileBackUp/
-**/MAC PATIENT RECORDS/
+
 
 # --- 3. Python & Virtual Environments ---
 __pycache__/
