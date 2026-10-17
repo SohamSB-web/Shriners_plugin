@@ -16,13 +16,13 @@ Filename filter: \.(qtm)$
 Types:
   Subject:
     Participant:
-      Fields: [ID, Name, Sex, DOB, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance]
+      Fields: [ID, Name, Sex, DOB]
       Children: [Session]
       Directory pattern: $Name$_$ID$
 
   Session:
     Session:
-      Fields: [Session ID, Operator]
+      Fields: [Session ID, Operator, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance]
       Measurements: [Static, Dynamic]
       Analyses: [Shriner Static]
       Display order: [Session ID, Operator, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance, Comments]
@@ -71,10 +71,10 @@ Fields:
     Inherit: Connect
   Creation date:
     Type: Date
-    Readonly: Yes
+    Readonly: No
   Creation time:
     Type: TimeOfDay
-    Readonly: Yes
+    Readonly: No
   Session ID:
     Type: String
     Inherit: Connect
