@@ -555,12 +555,14 @@ class MainWindow(QMainWindow):
             if cand.is_file():
                 xml = cand
 
-        if xml is not None and xml.is_file():
-            curr_static = Path(self._static_page._session_path).resolve() if self._static_page._session_path else None
-            if curr_static != xml:
-                self._static_page.clear_session()
-                with QSignalBlocker(self._static_page):
-                    self._static_page.set_session(str(xml))
+        curr_static = (
+            Path(self._static_page._session_path).resolve()
+            if self._static_page._session_path
+            else None
+        )
+
+        if curr_static is not None and curr_static != xml:
+            self._static_page.clear_session()
 
     def _on_calibration_session_selected(self, session_xml: str) -> None:
         if not session_xml:
