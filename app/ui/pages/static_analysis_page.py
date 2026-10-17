@@ -1157,24 +1157,12 @@ class StaticAnalysisPage(QScrollArea):
         self.session_selected.emit(self._session_path)
 
     def _set_calibration_enabled(self, enabled):
-        shared_measurement_widgets = set(getattr(self, "_anthro_widgets", {}).values()) | {
-            getattr(self, "_first_name", None),
-            getattr(self, "_patient_number", None),
-            getattr(self, "_sex", None),
-            getattr(self, "_dob_day", None),
-            getattr(self, "_dob_month", None),
-            getattr(self, "_dob_year", None),
-        }
         for widget in (self._config_widget.findChildren(QLineEdit) + self._config_widget.findChildren(QComboBox)
                        + self._config_widget.findChildren(QCheckBox) + self._config_widget.findChildren(QRadioButton)):
             if widget is not self._file_path_edit:
-                if widget in shared_measurement_widgets:
-                    if isinstance(widget, QLineEdit):
-                        widget.setReadOnly(True)
-                    else:
-                        widget.setEnabled(False)
-                else:
-                    widget.setEnabled(enabled)
+                if isinstance(widget, QLineEdit):
+                    widget.setReadOnly(not enabled)
+                widget.setEnabled(enabled)
         self._save_btn.setEnabled(enabled)
         self._fetch_btn.setEnabled(enabled)
         self._run_btn.setEnabled(enabled and bool(self._filename))

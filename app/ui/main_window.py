@@ -36,7 +36,6 @@ from app.ui.pages.patients_page import PatientsPage
 from app.ui.pages.qtm_page import QTMMonitorPage
 from app.ui.pages.settings_page import SettingsPage
 from app.ui.pages.static_analysis_page import StaticAnalysisPage
-from app.ui.pages.update_measurements_page import UpdateMeasurementsPage
 from app.ui.theme.design_tokens import (
     FONT_FAMILY,
     FONT_SIZE_BODY,
@@ -76,7 +75,6 @@ class AppSidebar(QFrame):
 
     NAV_ITEMS = [
         ("dashboard", "Overview", "dashboard.svg"),
-        ("update_measurements", "Update Mesurements", "sliders.svg"),
         ("static_analysis", "Static Analysis", "static_analysis.svg"),
         ("dynamic_analysis", "Dynamic Analysis", "dynamic_analysis.svg"),
         ("patients", "Patients && Sessions", "patients.svg"),
@@ -428,18 +426,15 @@ class MainWindow(QMainWindow):
 
         # Supporting Pages
         self._dashboard = DashboardPage()
-        self._update_measurements_page = UpdateMeasurementsPage()
         self._patients = PatientsPage()
         if self._settings.patients_data_location:
             self._static_page.set_data_root(self._settings.patients_data_location)
-            self._update_measurements_page.set_data_root(self._settings.patients_data_location)
             self._patients.set_patients_data_root(self._settings.patients_data_location)
         self._qtm = QTMMonitorPage()
         self._settings_page = SettingsPage(self._settings)
 
         for key, page in [
             ("dashboard", self._dashboard),
-            ("update_measurements", self._update_measurements_page),
             ("static_analysis", self._static_page),
             ("dynamic_analysis", self._dynamic_page),
             ("patients", self._patients),
@@ -482,8 +477,6 @@ class MainWindow(QMainWindow):
         self._static_page.session_selected.connect(self._on_calibration_session_selected)
         self._patients.proceed_to_analysis.connect(self._on_proceed_from_patients)
         self._patients.open_session_presentation.connect(self._on_open_single_session_presentation)
-        self._update_measurements_page.session_selected.connect(self._on_calibration_session_selected)
-        self._update_measurements_page.measurements_updated.connect(self._on_measurements_updated)
 
         # QTM connection
         self._qtm.connection_changed.connect(self._on_qtm_connection)
@@ -498,7 +491,6 @@ class MainWindow(QMainWindow):
         "dashboard": "Overview",
         "static_analysis": "Static Analysis",
         "dynamic_analysis": "Dynamic Analysis",
-        "update_measurements": "Update Mesurements",
         "patients": "Patient & Session Selection",
         "case_presentation": "Case Presentation",
         "qtm": "QTM Bridge",
@@ -570,16 +562,6 @@ class MainWindow(QMainWindow):
                 with QSignalBlocker(self._static_page):
                     self._static_page.set_session(str(xml))
 
-            curr_update = Path(self._update_measurements_page._session_dir).resolve() if self._update_measurements_page._session_dir else None
-            if curr_update != xml.parent:
-                with QSignalBlocker(self._update_measurements_page):
-                    self._update_measurements_page.set_session(str(xml))
-        elif session_dir:
-            curr_update = Path(self._update_measurements_page._session_dir).resolve() if self._update_measurements_page._session_dir else None
-            if curr_update != Path(session_dir).resolve():
-                with QSignalBlocker(self._update_measurements_page):
-                    self._update_measurements_page.set_session(session_dir)
-
     def _on_calibration_session_selected(self, session_xml: str) -> None:
         if not session_xml:
             return
@@ -597,15 +579,6 @@ class MainWindow(QMainWindow):
         patient_dir = session_dir.parent
         self._on_patient_selected(patient_dir.name)
         self._on_analysis_context_selected(str(patient_dir), str(session_dir), xml_path)
-
-    def _on_measurements_updated(self, updated_fields: dict) -> None:
-        """Propagate updated measurements immediately to StaticAnalysisPage inputs."""
-        if hasattr(self, "_static_page") and updated_fields:
-            for name, val in updated_fields.items():
-                if hasattr(self._static_page, "_set_sync_value") and name in getattr(self._static_page, "_sync_fields", set()):
-                    self._static_page._set_sync_value(name, val)
-                    if hasattr(self._static_page, "_manual_baseline"):
-                        self._static_page._manual_baseline[name] = self._static_page._sync_value(name)
 
     @Slot()
     def _on_proceed_from_patients(self) -> None:
