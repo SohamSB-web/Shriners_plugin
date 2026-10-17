@@ -22,14 +22,9 @@ credentials/
 
 # --- 2. Confidential Clinical & Patient Data ---
 # NEVER commit identifiable patient data, sessions, or clinical assets.
-**/Data/
-**/patient-data/
-**/clinical-data/
-**/datasets/
-**/uploads/
-**/recordings/
-**/medical-images/
-**/database-backups/
+/Data/
+/Shriners_Gait_Model_PAF_v1.0/Shriners_Gait_Model_PAF_v1.0/Data/
+
 
 # Raw motion capture trials, clinical files, and video recordings
 *.c3d
@@ -47,17 +42,7 @@ credentials/
 *.qtmproj.*
 
 # Clinical runtime state, backups, and dumps
-variables*.json
-*.csv
-*plot*.png
-*.paf.bak
-*.ipynb
-.ipynb_checkpoints/
-**/saves/
-**/Messages/
-**/work/
-**/DisplayFileBackUp/
-**/MAC PATIENT RECORDS/
+
 
 # --- 3. Python & Virtual Environments ---
 __pycache__/
