@@ -122,6 +122,14 @@ class SessionRow(QFrame):
         self.auto_assign_btn.clicked.connect(self._auto_assign_trials)
         header.addWidget(self.auto_assign_btn)
 
+        self.clear_btn = QPushButton(" Clear")
+        self.clear_btn.setIcon(create_tinted_icon("x.svg", LIGHT_PALETTE.text_secondary, 14))
+        self.clear_btn.setIconSize(QSize(14, 14))
+        self.clear_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_btn.setToolTip("Clear all dynamic trial selections (L1-L10, R1-R10, and Most Representative)")
+        self.clear_btn.clicked.connect(self.clear_dynamic_trials)
+        header.addWidget(self.clear_btn)
+
         self.dir_label = QLabel("No directory selected")
         self.dir_label.setObjectName("captionLabel")
         self.dir_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -477,6 +485,32 @@ class SessionRow(QFrame):
             combo.blockSignals(False)
 
         self._sync_mr_options()
+        self.trials_changed.emit(self.row_index)
+
+    def clear_dynamic_trials(self) -> None:
+        """Clear all dynamic trial combo selections (L1-L10, R1-R10, MR Left, MR Right)."""
+        for combo in self.left_combos:
+            combo.blockSignals(True)
+            combo.setCurrentText("--")
+            combo.blockSignals(False)
+
+        for combo in self.right_combos:
+            combo.blockSignals(True)
+            combo.setCurrentText("--")
+            combo.blockSignals(False)
+
+        self.mr_left_combo.blockSignals(True)
+        self.mr_left_combo.clear()
+        self.mr_left_combo.addItem("--")
+        self.mr_left_combo.setCurrentText("--")
+        self.mr_left_combo.blockSignals(False)
+
+        self.mr_right_combo.blockSignals(True)
+        self.mr_right_combo.clear()
+        self.mr_right_combo.addItem("--")
+        self.mr_right_combo.setCurrentText("--")
+        self.mr_right_combo.blockSignals(False)
+
         self.trials_changed.emit(self.row_index)
 
     def _import_gcd_files(self) -> None:
@@ -1017,6 +1051,8 @@ class PatientsPage(QScrollArea):
                     row.dir_btn.setIcon(create_tinted_icon("folder.svg", icon_col, 14))
                 if hasattr(row, "auto_assign_btn"):
                     row.auto_assign_btn.setIcon(create_tinted_icon("sliders.svg", icon_col, 14))
+                if hasattr(row, "clear_btn"):
+                    row.clear_btn.setIcon(create_tinted_icon("x.svg", icon_col, 14))
                 if hasattr(row, "view_case_btn"):
                     if dark:
                         row.view_case_btn.setIcon(create_tinted_icon("case_presentation.svg", "#2DD4BF", 14))

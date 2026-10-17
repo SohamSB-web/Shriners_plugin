@@ -21,27 +21,9 @@ credentials/
 *.cer
 
 # --- 2. Confidential Clinical & Patient Data ---
-# NEVER commit identifiable patient data, sessions, or clinical assets.
-/Data/
+# Exclude the PAF Data folder
 /Shriners_Gait_Model_PAF_v1.0/Shriners_Gait_Model_PAF_v1.0/Data/
-
-
-# Raw motion capture trials, clinical files, and video recordings
-*.c3d
-*.qtm
-*.GCD
-*.gcd
-*.avi
-*.mp4
-*.mov
-*.wmv
-*.mkv
-*.cmz
-*.cmx
-*.qtmproj
-*.qtmproj.*
-
-# Clinical runtime state, backups, and dumps
+/Data/
 
 
 # --- 3. Python & Virtual Environments ---

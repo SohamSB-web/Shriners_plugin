@@ -76,9 +76,9 @@ class AppSidebar(QFrame):
 
     NAV_ITEMS = [
         ("dashboard", "Overview", "dashboard.svg"),
+        ("update_measurements", "Update Mesurements", "sliders.svg"),
         ("static_analysis", "Static Analysis", "static_analysis.svg"),
         ("dynamic_analysis", "Dynamic Analysis", "dynamic_analysis.svg"),
-        ("update_measurements", "Update Mesurements", "sliders.svg"),
         ("patients", "Patients && Sessions", "patients.svg"),
         ("case_presentation", "Case Presentation", "case_presentation.svg"),
         ("qtm", "QTM Bridge", "qtm_bridge.svg"),
@@ -439,9 +439,9 @@ class MainWindow(QMainWindow):
 
         for key, page in [
             ("dashboard", self._dashboard),
+            ("update_measurements", self._update_measurements_page),
             ("static_analysis", self._static_page),
             ("dynamic_analysis", self._dynamic_page),
-            ("update_measurements", self._update_measurements_page),
             ("patients", self._patients),
             ("case_presentation", self._presentation_page),
             ("qtm", self._qtm),
@@ -483,6 +483,7 @@ class MainWindow(QMainWindow):
         self._patients.proceed_to_analysis.connect(self._on_proceed_from_patients)
         self._patients.open_session_presentation.connect(self._on_open_single_session_presentation)
         self._update_measurements_page.session_selected.connect(self._on_calibration_session_selected)
+        self._update_measurements_page.measurements_updated.connect(self._on_measurements_updated)
 
         # QTM connection
         self._qtm.connection_changed.connect(self._on_qtm_connection)
@@ -596,6 +597,15 @@ class MainWindow(QMainWindow):
         patient_dir = session_dir.parent
         self._on_patient_selected(patient_dir.name)
         self._on_analysis_context_selected(str(patient_dir), str(session_dir), xml_path)
+
+    def _on_measurements_updated(self, updated_fields: dict) -> None:
+        """Propagate updated measurements immediately to StaticAnalysisPage inputs."""
+        if hasattr(self, "_static_page") and updated_fields:
+            for name, val in updated_fields.items():
+                if hasattr(self._static_page, "_set_sync_value") and name in getattr(self._static_page, "_sync_fields", set()):
+                    self._static_page._set_sync_value(name, val)
+                    if hasattr(self._static_page, "_manual_baseline"):
+                        self._static_page._manual_baseline[name] = self._static_page._sync_value(name)
 
     @Slot()
     def _on_proceed_from_patients(self) -> None:

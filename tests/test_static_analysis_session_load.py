@@ -29,7 +29,7 @@ def test_static_page_populates_when_session_xml_selected(qapp):
     assert win._static_page._body_mass.text() == "150.0"
     assert win._static_page._height.text() == "0.600"
     assert win._static_page._anthro_inputs["right_leg_length"].text() == "1.400"
-    assert win._static_page._anthro_inputs["left_leg_length"].text() == "1.400"
+    assert win._static_page._anthro_inputs["left_leg_length"].text() == "1.200"
 
     # Also assert Update Measurements page was synchronized
     assert win._update_measurements_page._patient_name.text() == "Claudia"

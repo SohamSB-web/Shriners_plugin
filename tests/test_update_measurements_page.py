@@ -72,9 +72,10 @@ def test_update_measurements_tab_registered_in_main_window(app):
     assert "update_measurements" in win._page_map
     assert isinstance(win._page_map["update_measurements"], UpdateMeasurementsPage)
 
-    # Verify sidebar nav item text
+    # Verify sidebar nav item text and 2nd position
     nav_labels = [label for key, label, icon in win._sidebar.NAV_ITEMS]
     assert "Update Mesurements" in nav_labels
+    assert win._sidebar.NAV_ITEMS[1][0] == "update_measurements"
 
     # Verify navigating to the tab works
     win._navigate_to("update_measurements")
