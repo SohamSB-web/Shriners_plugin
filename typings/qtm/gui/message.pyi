@@ -1,0 +1,3 @@
+from typing import Any
+
+def add_message(*args: Any, **kwargs: Any) -> Any: ...

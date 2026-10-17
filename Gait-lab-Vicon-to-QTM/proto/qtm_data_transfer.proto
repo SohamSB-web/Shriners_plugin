@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package qtmdata;
+
+// --- Message for QTM to send data to Tkinter App ---
+message QtmFields {
+  int32 frames = 1;
+  float capture_frequency = 2;
+  int32 first_frame = 3;
+  int32 last_frame = 4;
+}
+
+// --- Generic Acknowledgment ---
+message Ack {
+  string message = 1;
+  bool success = 2;
+}
+
+// --- Message for Tkinter App to send a command to QTM ---
+message CommandToQtm {
+  string command_name = 1;
+  string command_args_json = 2; // Arguments for the command, as a JSON string
+}
+
+
+// The combined service definition
+service QtmTkinterBridge {
+  // RPC for QTM to send data to Tkinter App
+  rpc SendQtmFieldsToApp (QtmFields) returns (Ack) {}
+  
+  // RPC for Tkinter App to send a command to QTM
+  rpc SendCommandToQtm (CommandToQtm) returns (Ack) {}
+}

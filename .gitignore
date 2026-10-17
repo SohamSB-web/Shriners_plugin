@@ -1,0 +1,128 @@
+# ==============================================================================
+# CONFIDENTIAL GAIT ANALYSIS APPLICATION — SECURE .GITIGNORE
+# ==============================================================================
+# This repository is configured for secure private version control.
+# Real patient data, clinical recordings, credentials, and local environment files
+# must NEVER be committed.
+# ==============================================================================
+
+# --- 1. Environment & Credentials ---
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+*.cer
+
+# --- 2. Confidential Clinical & Patient Data ---
+# NEVER commit identifiable patient data, sessions, or clinical assets.
+**/Data/
+**/patient-data/
+**/clinical-data/
+**/datasets/
+**/uploads/
+**/recordings/
+**/medical-images/
+**/database-backups/
+
+# Raw motion capture trials, clinical files, and video recordings
+*.c3d
+*.qtm
+*.GCD
+*.gcd
+*.avi
+*.mp4
+*.mov
+*.wmv
+*.mkv
+*.cmz
+*.cmx
+*.qtmproj
+*.qtmproj.*
+
+# Clinical runtime state, backups, and dumps
+variables*.json
+*.csv
+*plot*.png
+*.paf.bak
+*.ipynb
+.ipynb_checkpoints/
+**/saves/
+**/Messages/
+**/work/
+**/DisplayFileBackUp/
+**/MAC PATIENT RECORDS/
+
+# --- 3. Python & Virtual Environments ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- 4. Logs & Diagnostic Output ---
+*.log
+logs/
+stdout_*.txt
+stderr_*.txt
+best.txt
+output_events.csv
+
+# --- 5. Databases & Backups ---
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+*.bak
+
+# --- 6. IDE, Editors & Development Tools ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+tempCodeRunnerFile.py
+
+# --- 7. Operating System Artifacts ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+desktop.ini
+*.lnk
+
+# --- 8. Build & Temporary Outputs ---
+build/
+dist/
+out/
+test_reports/
+scratch/
+*.tmp
+*.temp

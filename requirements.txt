@@ -1,0 +1,27 @@
+# Third-party packages for the Shriners Plugin
+# (QTM processing scripts in Shriners_Gait_Model_PAF_v1.0 + MAC_CasePresentation app).
+# Installed automatically by install_dependencies.bat.
+#
+# Not listed here:
+#   - Standard-library modules (tkinter, json, xml, threading, subprocess, ...) ship with Python.
+#   - ezc3d is installed from conda-forge by install_dependencies.bat (more reliable than pip on Windows).
+#   - viconnexusapi is NOT on PyPI. It ships with Vicon Nexus and is only used by the
+#     Vicon-only EMG amplify scripts, so it is not needed for the QTM workflow.
+
+numpy>=1.26,<2
+scipy>=1.13
+pandas>=2.0
+matplotlib>=3.9
+lxml>=5.3
+xlrd>=2.0
+reportlab>=4.0
+python-dateutil>=2.9
+grpcio>=1.71.0
+grpcio-tools>=1.71.0
+protobuf>=5.29.3
+
+# PySide6 UI framework (Qt for Python) — added for the modernized GUI
+PySide6>=6.7
+
+# Qualisys Python SDK for real-time protocol communication
+qtm-rt>=3.0

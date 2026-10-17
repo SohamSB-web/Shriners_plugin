@@ -1,0 +1,28 @@
+CONFIDENTIAL & PROPRIETARY — SHRINERS HOSPITALS FOR CHILDREN
+
+Copyright (c) 2026 Shriners Hospitals for Children Motion Analysis Centers.
+All Rights Reserved.
+
+This software, source code, user interfaces, biomechanical models, and associated
+documentation are strictly confidential and proprietary to Shriners Hospitals for
+Children.
+
+Unauthorized copying, distribution, modification, public display, sublicensing,
+or transfer of this software via any medium, in whole or in part, is strictly
+prohibited without prior written authorization from Shriners Hospitals for Children.
+
+This software is intended solely for authorized clinical and research workflows
+within Shriners Hospitals for Children Motion Analysis Centers.
+
+--------------------------------------------------------------------------------
+Third-Party and Open-Source Component Notices:
+--------------------------------------------------------------------------------
+1. Gait-lab-Vicon-to-QTM
+   Licensed under GNU General Public License v3.0 (GPLv3)
+   Copyright (c) Shriners Hospitals Motion Analysis Centers contributors.
+   Refer to: Gait-lab-Vicon-to-QTM/GNU Gerneral Public License.txt
+
+2. Qualisys PAF Templates & Integration
+   Licensed under the MIT License
+   Copyright (c) 2023 Qualisys AB
+   Refer to: Shriners_Gait_Model_PAF_v1.0/Shriners_Gait_Model_PAF_v1.0/LICENSE
