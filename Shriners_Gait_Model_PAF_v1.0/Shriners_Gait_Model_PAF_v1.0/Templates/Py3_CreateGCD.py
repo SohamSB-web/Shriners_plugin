@@ -81,23 +81,12 @@ class CreateGCD_Main():
         StartFrame, EndFrame = fields["First Frame"], fields["Last Frame"]
         MarkerFrameRate = fields['Capture_Frequency']
         TestingCondition=TestingCondition
-        StaticDataFileName = Path(FilePath) / "Calibration" / ('Static_' + TestingCondition + '_' + SubjectName + '.py')
-        if not StaticDataFileName.exists():
-            StaticDataFileName = Path(FilePath) / ('Static_' + TestingCondition + '_' + SubjectName + '.py')
+        StaticDataFileName = Path(FilePath) / ('Static_' + TestingCondition + '_' + SubjectName + '.py')
 
 
         self.ModelOutputs=fields['Points']+ model.getContents()
         exec(open(StaticDataFileName).read()) 
-        gcd_dir = Path(FilePath) / "GCD"
-        gcd_dir.mkdir(parents=True, exist_ok=True)
-        GCDFileName = gcd_dir / (FileName + '.GCD')
-        # Clean up legacy root GCD file if present
-        legacy_gcd = Path(FilePath) / (FileName + '.GCD')
-        if legacy_gcd.is_file() and legacy_gcd.resolve() != GCDFileName.resolve():
-            try:
-                legacy_gcd.unlink()
-            except OSError:
-                pass
+        GCDFileName = Path(FilePath) / (FileName + '.GCD')
         GCDFile = open(GCDFileName,'w+')
         # Report Generator Requires this line to read GCD file
         GCDFile.write('#!DST-Python3_ShrineGaitModel' + '\n')

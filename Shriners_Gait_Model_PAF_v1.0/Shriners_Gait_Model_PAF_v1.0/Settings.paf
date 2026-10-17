@@ -5,7 +5,7 @@ Package Information:
   Required QTM version: 2.16.3600
   Encoding bytes: €€€€€
 
-Root type: Subject
+Root type: Session
 Default fields: [Creation date, Creation time]
 
 Date format: Iso
@@ -14,18 +14,12 @@ Date separator: Dash
 Filename filter: \.(qtm)$
 
 Types:
-  Subject:
-    Participant:
-      Fields: [ID, Name, Sex, DOB, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance]
-      Children: [Session]
-      Directory pattern: $Name$_$ID$
-
   Session:
     Session:
-      Fields: [Session ID, Operator, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance]
+      Fields: [ID, Name, Sex, DOB, Session ID, Operator, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance]
       Measurements: [Static, Dynamic]
       Analyses: [Shriner Static]
-      Display order: [Session ID, Operator, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance, Comments]
+      Display order: [ID, Name, Sex, DOB, Session ID, Operator, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance, Comments]
       Directory pattern: $Creation date$_$Session ID$
 
 Measurements:
@@ -192,10 +186,12 @@ Columns:
       Width: 200
       Fields:
         Default: Filename
+        Session: ID
         Participant: ID
     Name:
       Width: 150
       Fields: 
+        Session: Name
         Participant: Name
     Created:
       Width: 65

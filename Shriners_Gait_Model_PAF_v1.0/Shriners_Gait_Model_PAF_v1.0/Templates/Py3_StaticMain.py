@@ -88,23 +88,13 @@ fields = extract_fields_by_filename(sessionPath, filename)
 SubjectName = fields["Name"]
 FilePath, FileName = fields["Path"], fields["Filename"]
 # StaticDataFileName = FilePath + 'Static_BF_' + SubjectName + '.py'
-calib_dir = Path(FilePath) / "Calibration"
-calib_dir.mkdir(parents=True, exist_ok=True)
-_calib_cand = calib_dir / ("Static_" + TestingCondition + "_" + SubjectName + ".py")
-if _calib_cand.exists():
-    StaticDataFileName = _calib_cand
-elif (Path(FilePath) / ("Static_" + TestingCondition + "_" + SubjectName + ".py")).exists():
-    StaticDataFileName = Path(FilePath) / ("Static_" + TestingCondition + "_" + SubjectName + ".py")
-else:
-    StaticDataFileName = _calib_cand
-
-_sitting_cand = calib_dir / ("SittingFootStatic_" + TestingCondition + "_" + SubjectName + ".py")
-if _sitting_cand.exists():
-    SittingFootStaticDataFileName = _sitting_cand
-elif (Path(FilePath) / ("SittingFootStatic_" + TestingCondition + "_" + SubjectName + ".py")).exists():
-    SittingFootStaticDataFileName = Path(FilePath) / ("SittingFootStatic_" + TestingCondition + "_" + SubjectName + ".py")
-else:
-    SittingFootStaticDataFileName = _sitting_cand
+# Condition- Barefoot (BF) string read as Script Argument
+StaticDataFileName = Path(FilePath) / (
+    "Static_" + TestingCondition + "_" + SubjectName + ".py"
+)
+SittingFootStaticDataFileName = Path(FilePath) / (
+    "SittingFootStatic_" + TestingCondition + "_" + SubjectName + ".py"
+)
 
 # Height and Width of App Display
 AppHeight = 950

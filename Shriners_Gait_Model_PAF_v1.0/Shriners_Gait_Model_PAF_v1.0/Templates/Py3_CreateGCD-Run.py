@@ -67,25 +67,13 @@ DefaultTestingCondition = 'BF'
 TestingCondition = DefaultTestingCondition
 if len(sys.argv) > 1:
     TestingCondition = sys.argv[1]
-_calib_cand = Path(FilePath) / "Calibration" / ('Static_' + TestingCondition + '_' + SubjectName + '.py')
-if _calib_cand.exists():
-    StaticDataFileName = str(_calib_cand)
-else:
-    StaticDataFileName = os.path.join(FilePath, 'Static_' + TestingCondition + '_' + SubjectName + '.py')
+StaticDataFileName = FilePath + 'Static_' + TestingCondition + '_' + SubjectName + '.py'
 
   
 class CreateGCD_Main(model):
     def __init__(self):
         exec(open(StaticDataFileName).read()) 
-        gcd_dir = Path(FilePath) / "GCD"
-        gcd_dir.mkdir(parents=True, exist_ok=True)
-        GCDFileName = str(gcd_dir / (FileName + '.GCD'))
-        legacy_gcd = Path(FilePath) / (FileName + '.GCD')
-        if legacy_gcd.is_file() and legacy_gcd.resolve() != Path(GCDFileName).resolve():
-            try:
-                legacy_gcd.unlink()
-            except OSError:
-                pass
+        GCDFileName = FilePath + FileName + '.GCD'
         GCDFile = open(GCDFileName,'w+')
         # Report Generator Requires this line to read GCD file
         GCDFile.write('#!DST-Python3_ShrineGaitModel' + '\n')

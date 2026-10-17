@@ -78,23 +78,8 @@ fields = extract_fields_by_filename(str(_sess_xml), "Static 1.qtm")
 #print(vicon.GetSubjectNames())
 SubjectName = fields["Name"]
 FilePath, FileName = fields["Path"], fields["Filename"]
-calib_dir = Path(FilePath) / "Calibration"
-calib_dir.mkdir(parents=True, exist_ok=True)
-_sitting_cand = calib_dir / ('SittingFootStatic_' + TestingCondition + '_' + SubjectName + '.py')
-if _sitting_cand.exists():
-    SittingFootStaticDataFileName = _sitting_cand
-elif (Path(FilePath) / ('SittingFootStatic_' + TestingCondition + '_' + SubjectName + '.py')).exists():
-    SittingFootStaticDataFileName = Path(FilePath) / ('SittingFootStatic_' + TestingCondition + '_' + SubjectName + '.py')
-else:
-    SittingFootStaticDataFileName = _sitting_cand
-
-_calib_cand = calib_dir / ('Static_' + TestingCondition + '_' + SubjectName + '.py')
-if _calib_cand.exists():
-    StaticDataFileName = _calib_cand
-elif (Path(FilePath) / ('Static_' + TestingCondition + '_' + SubjectName + '.py')).exists():
-    StaticDataFileName = Path(FilePath) / ('Static_' + TestingCondition + '_' + SubjectName + '.py')
-else:
-    StaticDataFileName = _calib_cand
+SittingFootStaticDataFileName = Path(FilePath) / ('SittingFootStatic_' + TestingCondition + '_' + SubjectName + '.py')
+StaticDataFileName = Path(FilePath) / ('Static_' + TestingCondition + '_' + SubjectName + '.py')
 
 #Height and Width of App Display
 AppHeight=360 
