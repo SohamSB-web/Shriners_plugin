@@ -98,11 +98,7 @@ if len(sys.argv) > 1:
 else:
     # Default: use the GCD file from the current trial in fields
     FilePath, FileName = fields["Path"], fields["Filename"]
-    gcd_cand = Path(FilePath) / "GCD" / (FileName + '.GCD')
-    if gcd_cand.exists():
-        GCDFileName = gcd_cand
-    else:
-        GCDFileName = Path(FilePath) / (FileName + '.GCD')
+    GCDFileName = Path(FilePath) /(FileName + '.GCD')
 
 [GCD_VariableNames, GCD_VariableData] = ReadGCD(GCDFileName)
 

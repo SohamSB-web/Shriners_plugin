@@ -64,11 +64,7 @@ TestingCondition = DefaultTestingCondition
 if len(sys.argv) > 1:
     TestingCondition = sys.argv[1]
     
-_calib_f = os.path.join(FilePath, "Calibration", 'Static_' + TestingCondition + '_' + SubjectName + '.py')
-if os.path.exists(_calib_f):
-    StaticDataFileName = _calib_f
-else:
-    StaticDataFileName = os.path.join(FilePath, 'Static_' + TestingCondition + '_' + SubjectName + '.py')
+StaticDataFileName = FilePath + 'Static_' + TestingCondition + '_' + SubjectName + '.py'
 
 class Main():
     def __init__(self):

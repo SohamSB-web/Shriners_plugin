@@ -83,15 +83,10 @@ FilePath, FileName = Path(fields["Path"]), fields["Filename"]
 StartFrame, EndFrame = fields["First Frame"], fields["Last Frame"]
 MarkerFrameRate = fields["Capture_Frequency"]
 # StaticDataFileName = FilePath + 'Static_BF_' + SubjectName + '.py'
-calib_file = FilePath / "Calibration" / (
+# Condition- Barefoot (BF) string read as Script Argument
+StaticDataFileName = FilePath / (
     "Static_" + TestingCondition + "_" + SubjectName + ".py"
 )
-if calib_file.exists():
-    StaticDataFileName = calib_file
-else:
-    StaticDataFileName = FilePath / (
-        "Static_" + TestingCondition + "_" + SubjectName + ".py"
-    )
 
 
 class Dynamic_Main:
