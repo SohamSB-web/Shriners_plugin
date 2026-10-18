@@ -25,6 +25,10 @@ credentials/
 /Shriners_Gait_Model_PAF_v1.0/Shriners_Gait_Model_PAF_v1.0/Data/
 /Data/
 
+# Normative reference GCD exceptions (must be tracked in version control)
+!/MAC_CasePresentation/TD_Run_Ave.GCD
+!/MAC_CasePresentation/TD_Ave.GCD
+
 
 # --- 3. Python & Virtual Environments ---
 __pycache__/
