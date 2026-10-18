@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 from app.services.event_service import check_event_pairing, fetch_events_from_qtm, save_trial_events, send_events_to_qtm
@@ -907,31 +908,66 @@ class EventDetailsDialog(QDialog):
             self._table.setRowHeight(row_idx, 38)
 
             # 6. Action button (Remove event) wrapped in a centered container to prevent overlap
+            
+            # Small Remove button, centered inside the table row
             del_wrap = QWidget()
             del_wrap.setStyleSheet("background: transparent;")
+
             del_layout = QHBoxLayout(del_wrap)
-            del_layout.setContentsMargins(4, 2, 4, 2)
-            del_layout.setAlignment(Qt.AlignCenter)
+            del_layout.setContentsMargins(0, 0, 0, 0)
+            del_layout.setSpacing(0)
 
             del_btn = QPushButton("✕ Remove")
-            del_btn.setFont(QFont(FONT_FAMILY, 9, QFont.Bold))
+            del_btn.setFont(QFont(FONT_FAMILY, 8))
             del_btn.setCursor(Qt.PointingHandCursor)
-            del_btn.setFixedHeight(26)
-            del_btn.setMinimumWidth(82)
+            del_btn.setFixedSize(72, 20)
+            del_btn.setSizePolicy(
+                QSizePolicy.Fixed,
+                QSizePolicy.Fixed
+            )
+
             if self._is_dark:
-                del_btn.setStyleSheet(
-                    "QPushButton { background: transparent; color: #F87171; border: 1.5px solid #EF4444; border-radius: 4px; padding: 1px 8px; margin: 1px 2px; }"
-                    "QPushButton:hover { background: rgba(239, 68, 68, 0.2); color: #FFFFFF; border-color: #F87171; }"
-                    "QPushButton:pressed { background: rgba(239, 68, 68, 0.35); border-color: #EF4444; }"
-                )
+                del_btn.setStyleSheet("""
+                    QPushButton {
+                        background: transparent;
+                        color: #F87171;
+                        border: 1px solid #EF4444;
+                        border-radius: 3px;
+                        padding: 0px;
+                        margin: 0px;
+                    }
+                    QPushButton:hover {
+                        background: #7F1D1D;
+                        color: #FFFFFF;
+                    }
+                    QPushButton:pressed {
+                        background: #991B1B;
+                    }
+                """)
             else:
-                del_btn.setStyleSheet(
-                    "QPushButton { background: transparent; color: #DC2626; border: 1.5px solid #FCA5A5; border-radius: 4px; padding: 1px 8px; margin: 1px 2px; }"
-                    "QPushButton:hover { background: #FEF2F2; color: #991B1B; border-color: #EF4444; }"
-                    "QPushButton:pressed { background: #FEE2E2; border-color: #DC2626; }"
-                )
-            del_btn.clicked.connect(lambda _, r=row_idx: self._on_delete_row_event(r))
-            del_layout.addWidget(del_btn)
+                del_btn.setStyleSheet("""
+                    QPushButton {
+                        background: transparent;
+                        color: #DC2626;
+                        border: 1px solid #FCA5A5;
+                        border-radius: 3px;
+                        padding: 0px;
+                        margin: 0px;
+                    }
+                    QPushButton:hover {
+                        background: #FEF2F2;
+                        border-color: #EF4444;
+                    }
+                    QPushButton:pressed {
+                        background: #FEE2E2;
+                    }
+                """)
+
+            del_btn.clicked.connect(
+                lambda _, r=row_idx: self._on_delete_row_event(r)
+            )
+
+            del_layout.addWidget(del_btn, 0, Qt.AlignCenter)
             self._table.setCellWidget(row_idx, 5, del_wrap)
 
         self._table.blockSignals(False)
