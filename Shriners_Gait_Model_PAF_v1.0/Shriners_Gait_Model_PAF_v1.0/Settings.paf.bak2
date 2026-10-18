@@ -1,0 +1,205 @@
+Project ID: Open PAF Python Example
+Package Information:
+  Name: Python Example
+  Version: 1.1.3
+  Required QTM version: 2.16.3600
+  Encoding bytes: €€€€€
+
+Root type: Subject
+Default fields: [Creation date, Creation time]
+
+Date format: Iso
+Date separator: Dash
+
+Filename filter: \.(qtm)$
+
+Types:
+  Subject:
+    Participant:
+      Fields: [ID, Name, Sex, DOB]
+      Children: [Session]
+      Directory pattern: $Name$_$ID$
+
+  Session:
+    Session:
+      Fields: [Session ID, Operator, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance]
+      Measurements: [Static, Dynamic]
+      Analyses: [Shriner Static]
+      Display order: [ Session ID, Operator, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance, Comments]
+      Directory pattern: $Creation date$_$Session ID$
+
+Measurements:
+  Fields:
+    Measurement length: 30
+    Minimum count: 1
+    Maximum count: 20
+    Count: 1
+  Static:
+    Measurement length: 1
+    Minimum count: 1
+    Maximum count: 20
+    Count: 1
+    Measurement type: Static
+    AIM models: Static.qam
+  Dynamic:
+    Minimum count: 1
+    Maximum count: 20
+    Count: 3
+    Measurement type: Dynamic
+    AIM models: Dynamic.qam
+
+Analyses:
+  Shriner Static:
+    Type: External program
+    Program display name: Command Prompt
+    Export session: Yes
+    Export measurements: c3d
+    Arguments: ['/C $TemplateDirectory$\run_python_example.bat']
+    
+
+Fields:
+
+  ID:
+    Type: String
+    Inherit: Connect
+  Name:
+    Type: String
+    Inherit: Connect
+    Force: Yes
+  DOB:
+    Type: Date
+    Inherit: Connect
+  Creation date:
+    Type: Date
+    Readonly: No
+  Creation time:
+    Type: TimeOfDay
+    Readonly: No
+  Session ID:
+    Type: String
+    Inherit: Connect
+  Operator:
+    Type: String
+    Inherit: Connect
+  BodyMass:
+    Type: Float
+    Quantity: Mass
+    Unit: kilograms
+    Decimals: 1
+    Inherit: Connect
+    Max: 250
+    Min: 0
+  Height:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Decimals: 3
+    Inherit: Connect
+    Max: 2.5
+    Min: 0.5
+  InterAsisDistance:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Decimals: 3
+    Inherit: Connect
+    Min: 0.1
+    Max: 0.4
+
+
+  LeftLegLength:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Decimals: 3
+    Inherit: Connect
+    Min: 0.6
+    Max: 1.2
+  LeftAsisTrocanterDistance:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Inherit: Connect
+    Decimals: 3
+    Min: 0
+    Max: 0.3
+  LeftKneeWidth:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Decimals: 3
+    Inherit: Connect
+    Min: 0.06
+    Max: 0.15
+  LeftAnkleWidth:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Decimals: 3
+    Inherit: Connect
+    Min: 0.05
+    Max: 0.12
+  RightLegLength:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Decimals: 3
+    Inherit: Connect
+    Min: 0.6
+    Max: 1.2
+  RightAsisTrocanterDistance:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Decimals: 3
+    Inherit: Connect
+    Min: 0
+    Max: 0.3
+
+
+  RightKneeWidth:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Decimals: 3
+    Inherit: Connect
+    Min: 0.06
+    Max: 0.15
+
+
+
+  RightAnkleWidth:
+    Type: Float
+    Quantity: Length
+    Unit: m
+    Decimals: 3
+    Inherit: Connect
+    Min: 0.05
+    Max: 0.12
+
+
+
+  Sex:
+    Type: Enum
+    Values: [Female, Male, Other]
+    Inherit: Connect
+  Measurement type:
+    Type: String
+
+Columns:
+  Default column definitions:
+    ID:
+      Width: 200
+      Fields:
+        Default: Filename
+        Participant: ID
+    Name:
+      Width: 150
+      Fields: 
+        Participant: Name
+    Created:
+      Width: 65
+      Field: Creation date
+    Comments:
+      Field: Comments
+      Width: 100
