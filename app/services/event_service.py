@@ -13,9 +13,11 @@ import os
 from pathlib import Path
 import sys
 import re
+import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.frame_coordinates import (frame_to_time, frame_to_index, time_to_frame, normalize_saved_events, recording_start_frame, FRAME_CONVENTION, sample_index_to_frame, trace_event)
+from app.services.event_store import EventStore, EventRevisionConflict
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,33 @@ def trial_names_match(name1: str | Path | None, name2: str | Path | None) -> boo
     return bool(n1 and n2 and n1 == n2)
 
 
+def _read_c3d_event_projection(path):
+    """Read an existing projection during migration, without rewriting the recording."""
+    if not path.is_file():
+        return None
+    try:
+        import ezc3d
+        c = ezc3d.c3d(str(path))
+        group = c["parameters"].get("EVENT", {})
+        labels = group.get("LABELS", {}).get("value", [])
+        contexts = group.get("CONTEXTS", {}).get("value", [])
+        times = group.get("TIMES", {}).get("value", [])
+        if not labels:
+            return None
+        frequency = float(c["header"]["points"]["frame_rate"])
+        events = []
+        for i, label in enumerate(labels):
+            if label in {"Foot Strike", "Foot Off"} and i < len(contexts):
+                label = f"{contexts[i]} {label}"
+            label = normalize_qtm_event_label(label)
+            if label in {"RSTRIKE", "ROFF", "LSTRIKE", "LOFF"}:
+                events.append({"label": label, "frame": time_to_frame(float(times[0][i]) * 60 + float(times[1][i]), frequency)})
+        return {"events": events, "meta": {"frame_rate": frequency, "frame_convention": FRAME_CONVENTION,
+                "recording_start_frame": sample_index_to_frame(c["header"]["points"]["first_frame"])}}
+    except Exception:
+        return None
+
+
 def load_trial_events(session_dir: str | Path, trial_filename: str) -> Optional[Dict[str, Any]]:
     """
     Load auto-detected gait events for a dynamic trial from auto_event_<stem>_results.json.
@@ -57,6 +86,8 @@ def load_trial_events(session_dir: str | Path, trial_filename: str) -> Optional[
     s_dir = Path(session_dir)
     stem = Path(trial_filename).stem
     events_dir = s_dir / "Events"
+    store = EventStore(s_dir)
+    stored = store.read(trial_filename)
 
     # Search for matching results JSON in Events/ first, then session root (case-insensitive)
     candidates = [
@@ -85,18 +116,54 @@ def load_trial_events(session_dir: str | Path, trial_filename: str) -> Optional[
             if target_path:
                 break
 
-    if target_path is None or not target_path.is_file():
+    if stored is not None:
+        target_path = events_dir / f"auto_event_{stem}_results.json"
+    c3d_source = None
+    if stored is None:
+        c3d_source = _read_c3d_event_projection(s_dir / f"{stem}.c3d")
+        if target_path is None and c3d_source and c3d_source["events"]:
+            normalized = normalize_saved_events(c3d_source["events"], c3d_source["meta"])
+            stored = store.commit(trial_filename, {"events": normalized, "meta": c3d_source["meta"]},
+                                  "legacy_c3d_import", enqueue=False, expected_revision=0)
+            target_path = events_dir / f"auto_event_{stem}_results.json"
+    if target_path is None or (stored is None and not target_path.is_file()):
         return None
 
     try:
-        with open(target_path, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
+        if stored is not None:
+            data = stored["payload"]
+        else:
+            with open(target_path, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
 
         events_list: List[Dict[str, Any]] = data.get("events", [])
         meta: Dict[str, Any] = dict(data.get("meta", {}))
         events_list = normalize_saved_events(events_list, meta)
         meta["frame_convention"] = FRAME_CONVENTION
         meta["recording_start_frame"] = recording_start_frame(meta)
+        if stored is None:
+            conflicts = []
+            for candidate in candidates:
+                if candidate.is_file() and candidate.resolve() != target_path.resolve():
+                    try:
+                        other = json.loads(candidate.read_text(encoding="utf-8"))
+                        if other.get("events") != data.get("events"):
+                            conflicts.append(str(candidate))
+                    except (OSError, ValueError):
+                        conflicts.append(str(candidate))
+            if conflicts:
+                meta["migration_conflicts"] = conflicts
+            if c3d_source:
+                from app.services.qtm_event_protocol import event_signature
+                if event_signature(c3d_source["events"]) != event_signature(events_list):
+                    meta.setdefault("migration_conflicts", []).append(str(s_dir / f"{stem}.c3d"))
+            stored = store.commit(trial_filename, {"events": events_list, "meta": meta},
+                                  "legacy_import", enqueue=False, expected_revision=0)
+        meta.update(event_revision=stored["revision"], event_sync_status=stored["sync_status"],
+                    event_sync_error=stored["sync_error"], projection_error=stored["projection_error"],
+                    intentional_deletion=stored["intentional_deletion"], provenance=stored["provenance"])
+        if meta.get("migration_conflicts"):
+            meta["event_sync_status"] = "QTM Conflict"
 
         # Compute counts by label
         r_hs = 0
@@ -199,6 +266,7 @@ def save_trial_events(
     trial_filename: str,
     events_list: List[Dict[str, Any]],
     meta: Optional[Dict[str, Any]] = None,
+    *, provenance: str = "manual_edit", expected_revision: Optional[int] = None, enqueue: bool = True,
 ) -> Dict[str, Any]:
     """
     Save manually edited or newly added gait events to auto_event_<stem>_results.json.
@@ -226,6 +294,8 @@ def save_trial_events(
     clean_events: List[Dict[str, Any]] = []
     for ev in sorted(events_list, key=lambda x: int(x.get("frame", 0))):
         f = int(ev.get("frame", 0))
+        if f < 1 or f != float(ev.get("frame", 0)):
+            raise ValueError("Events must use whole absolute QTM timeline frames")
         lbl = str(ev.get("label", "")).strip().upper()
         if not lbl:
             continue
@@ -234,6 +304,7 @@ def save_trial_events(
         side = ev.get("side") or ("R" if "R" in lbl else ("L" if "L" in lbl else ""))
         etype = ev.get("type") or ("STRIKE" if ("STRIKE" in lbl or "HS" in lbl) else ("OFF" if ("OFF" in lbl or "OF" in lbl) else ""))
         clean_events.append({
+            **ev,
             "frame": f,
             "label": lbl,
             "time": time_s,
@@ -260,7 +331,7 @@ def save_trial_events(
         meta = {}
     meta = dict(meta)
     meta["pairing_valid"] = pairing_valid
-    meta["manual_override"] = True
+    meta["manual_override"] = provenance != "auto_label"
     meta["total_events"] = len(clean_events)
     meta["frame_rate"] = freq
     meta["initial_frame_offset"] = offset
@@ -272,46 +343,52 @@ def save_trial_events(
         "meta": meta,
     }
 
-    with open(target_path, "w", encoding="utf-8") as fp:
-        json.dump(data, fp, indent=2)
+    store = EventStore(s_dir)
+    previous = store.read(trial_filename)
+    if provenance == "auto_label" and not clean_events and previous and previous["payload"]["events"]:
+        raise ValueError("Detection returned no events; the previous saved revision was preserved")
+    if expected_revision is None and meta.get("event_revision") is not None:
+        expected_revision = int(meta["event_revision"])
+    stored = store.commit(trial_filename, data, provenance, enqueue=enqueue, expected_revision=expected_revision,
+                          deleted=not clean_events and provenance in {"manual_edit", "manual_delete", "qtm_accepted"})
+    project_trial_events(s_dir, trial_filename, stored["revision"])
+    return load_trial_events(s_dir, trial_filename)
 
-    # Clean up obsolete loose JSON in session root if present
-    for legacy_name in [f"auto_event_{stem}_results.json", f"auto_event_{stem.lower()}_results.json"]:
-        legacy_path = s_dir / legacy_name
-        if legacy_path.is_file() and legacy_path.resolve() != target_path.resolve():
-            try:
-                legacy_path.unlink()
-            except OSError:
-                pass
 
-    # Also write events directly into the trial's .c3d file if it exists
-    c3d_candidates = [
-        s_dir / f"{stem}.c3d",
-        s_dir / f"{stem.lower()}.c3d",
-    ]
-    for c3d_cand in c3d_candidates:
-        if c3d_cand.is_file():
-            write_events_to_c3d(c3d_cand, clean_events, frame_rate=freq, offset=offset)
-            break
-
-    total = len(clean_events)
-    return {
-        "trial_filename": trial_filename,
-        "filepath": str(target_path),
-        "events": clean_events,
-        "meta": meta,
-        "total_events": total,
-        "r_hs": r_hs,
-        "r_to": r_to,
-        "l_hs": l_hs,
-        "l_to": l_to,
-        "pairing_valid": pairing_valid,
-        "filter_method": meta.get("filter_method", "manual"),
-        "zone_frames": meta.get("zone_frames", [0, 0]),
-        "frame_rate": freq,
-        "initial_frame_offset": offset,
-        "summary_text": f"{total} Events (R: {r_hs + r_to}, L: {l_hs + l_to})",
-    }
+def project_trial_events(session_dir, trial_filename, revision):
+    """Recoverable projections: retain the committed DB revision even if an export fails."""
+    store = EventStore(session_dir)
+    with store.transaction() as db:
+        stored = store.read(trial_filename, db)
+        if stored is None or stored["revision"] != revision:
+            raise EventRevisionConflict("Projection belongs to a superseded event revision")
+        target = Path(session_dir) / "Events" / f"auto_event_{Path(trial_filename).stem}_results.json"
+        temporary = None
+        errors = []
+        try:
+            if target.is_symlink():
+                raise ValueError("Event JSON destination is a symlink")
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent, suffix=".tmp", delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump(stored["payload"], stream, indent=2, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if json.loads(temporary.read_text(encoding="utf-8")) != stored["payload"]:
+                raise ValueError("JSON event read-back failed")
+            os.replace(temporary, target)
+        except (OSError, ValueError) as error:
+            errors.append(str(error))
+        finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
+        c3d = Path(session_dir) / f"{Path(trial_filename).stem}.c3d"
+        meta = stored["payload"]["meta"]
+        if c3d.is_file() and not write_events_to_c3d(c3d, stored["payload"]["events"],
+                                                  frame_rate=meta["frame_rate"], offset=meta.get("initial_frame_offset", 0)):
+            errors.append("C3D event export failed; committed events remain in SQLite")
+        db.execute("UPDATE trials SET projection_error=? WHERE id=? AND revision=?",
+                   ("; ".join(errors), stored["id"], revision))
+        return not errors
 
 
 def get_qtm_active_file() -> Optional[str]:
@@ -423,118 +500,40 @@ def write_events_to_c3d(
         c.add_parameter('EVENT', 'SUBJECTS', subjects)
         c.add_parameter('EVENT', 'ICON_IDS', icon_ids)
         c.add_parameter('EVENT', 'GENERIC_FLAGS', generic_flags)
-        c.write(str(p))
+        if p.is_symlink():
+            raise ValueError("C3D event projection must not follow a symlink")
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=p.parent, suffix=".c3d", delete=False) as stream:
+                temporary = Path(stream.name)
+            c.write(str(temporary))
+            verified = ezc3d.c3d(str(temporary))["parameters"]["EVENT"]
+            if list(verified["LABELS"]["value"]) != labels or not np.allclose(verified["TIMES"]["value"], times):
+                raise ValueError("C3D event projection read-back failed")
+            os.replace(temporary, p)
+        finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
         return True
     except Exception as e:
         logger.warning("Could not write events to C3D file %s: %s", p, e)
         return False
 
 
-def send_events_to_qtm(
-    events_list: List[Dict[str, Any]],
-    frame_rate: float = 100.0,
-    offset: int = 0,
-    port: int = 50052,
-    trial_filename: Optional[str] = None,
-) -> Tuple[bool, str]:
-    """
-    Write gait events directly to Qualisys Track Manager (QTM) timeline via gRPC.
-
-    Parameters
-    ----------
-    events_list : list of dicts with 'frame' and 'label'
-    frame_rate : capture frequency in Hz
-    offset : initial frame offset
-    port : QTM gRPC port (default 50052)
-    trial_filename : optional filename of the trial (e.g. 'Dynamic 1.qtm').
-        If provided, verifies that QTM currently has this trial open before
-        modifying the QTM timeline to prevent cross-trial contamination.
-
-    Returns
-    -------
-    tuple of (success: bool, message: str)
-    """
-    import socket
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.1)
-            is_open = (s.connect_ex(('127.0.0.1', port)) == 0)
-    except Exception:
-        is_open = False
-
-    # Verify that QTM currently has this trial open before sending to live timeline
-    if trial_filename:
-        active_qtm_file = get_qtm_active_file()
-        if active_qtm_file:
-            if not trial_names_match(trial_filename, active_qtm_file):
-                return False, (
-                    f"QTM currently has '{active_qtm_file}' open, not '{trial_filename}'. "
-                    f"Live timeline update skipped to avoid cross-trial contamination. "
-                    f"Events are safely saved inside {trial_filename}'s file."
-                )
-
-    if not is_open:
-        return False, f"QTM server not reachable on port {port}. Changes saved locally."
-
-    try:
-        from app.services.settings_service import SettingsService
-        cfg_qtm = SettingsService().load_app_settings().qtm_grpc_location
-        if cfg_qtm and Path(cfg_qtm).is_dir():
-            qtm_dir = str(Path(cfg_qtm).resolve())
-        else:
-            cand1 = Path(__file__).resolve().parent.parent.parent / "QTM-GRPC"
-            cand2 = Path(__file__).resolve().parent.parent.parent / "Gait-lab-Vicon-to-QTM" / "QTM_GRPC"
-            if cand1.is_dir():
-                qtm_dir = str(cand1)
-            elif cand2.is_dir():
-                qtm_dir = str(cand2)
-            else:
-                qtm_dir = str(cand1)
-        if qtm_dir not in sys.path:
-            sys.path.insert(0, qtm_dir)
-        import grpc
-        import qtm_data_transfer_pb2
-        import qtm_data_transfer_pb2_grpc
-
-        bulk_events = []
-        for ev in sorted(events_list, key=lambda x: int(x.get("frame", 0))):
-            f = int(ev.get("frame", 0))
-            lbl = str(ev.get("label", "")).strip().upper()
-            if not lbl:
-                continue
-            time_sec = frame_to_time(f, frame_rate)
-            trace_event("application_send", lbl, f, frame_rate, sample_index_to_frame(offset))
-            bulk_events.append({"label": lbl, "time": time_sec, "frame": f, "frame_convention": FRAME_CONVENTION})
-
-        with grpc.insecure_channel(f"localhost:{port}") as channel:
-            stub = qtm_data_transfer_pb2_grpc.QtmTkinterBridgeStub(channel)
-
-            # Optional: attempt ClearEvents for this trial if available
-            try:
-                clear_args = {"trial_name": trial_filename} if trial_filename else {}
-                clear_req = qtm_data_transfer_pb2.CommandToQtm(
-                    command_name="ClearEvents",
-                    command_args_json=json.dumps(clear_args),
-                )
-                stub.SendCommandToQtm(clear_req, timeout=2)
-            except Exception:
-                pass
-
-            payload_data = {"events": bulk_events}
-            if trial_filename:
-                payload_data["trial_name"] = str(trial_filename)
-            payload = json.dumps(payload_data)
-            req = qtm_data_transfer_pb2.CommandToQtm(
-                command_name="SetEvents",
-                command_args_json=payload,
-            )
-            response = stub.SendCommandToQtm(req, timeout=5)
-            msg = getattr(response, "message", "Events sent")
-            ok = getattr(response, "success", True)
-            return ok, f"QTM: {msg}"
-    except Exception as e:
-        logger.warning("Error communicating with QTM: %s", e)
-        return False, f"QTM gRPC error: {e}"
+def send_events_to_qtm(events_list, frame_rate=100.0, offset=0, port=50052, trial_filename=None, session_dir=None):
+    """Explicit push of an already committed revision; never target a name alone."""
+    from app.services.event_sync_service import push_saved_events
+    from app.services.qtm_event_protocol import event_signature
+    if not trial_filename:
+        return False, "An exact selected trial is required"
+    if session_dir is None:
+        if not trial_filename or not Path(trial_filename).is_absolute():
+            return False, "Exact session/measurement path is required; events remain saved locally"
+        session_dir = Path(trial_filename).parent
+    info = load_trial_events(session_dir, Path(trial_filename).name)
+    if info is None or event_signature(info["events"]) != event_signature(events_list):
+        return False, "Commit this event set locally before pushing it to QTM"
+    return push_saved_events(session_dir, Path(trial_filename).name, port)
 
 
 def normalize_qtm_event_label(raw_label: str) -> str:
@@ -583,287 +582,26 @@ def normalize_qtm_event_label(raw_label: str) -> str:
     return str(raw_label).strip().upper()
 
 
-def fetch_events_from_qtm(
-    port: int = 50052,
-    trial_filename: Optional[str] = None,
-    default_frame_rate: Optional[float] = None,
-    session_dir: Optional[str | Path] = None,
-) -> Tuple[bool, str, Optional[str], List[Dict[str, Any]], Dict[str, Any]]:
-    """
-    Fetch live gait events directly from Qualisys Track Manager (QTM) timeline over gRPC.
-
-    Parameters
-    ----------
-    port : int
-        QTM gRPC server port (default 50052).
-    trial_filename : optional str
-        If provided, checks if the active QTM trial matches this filename.
-    default_frame_rate : optional float
-        Fallback frame rate if QTM payload does not specify frequency.
-    session_dir : optional str | Path
-        Directory containing trial files for C3D frequency resolution.
-
-    Returns
-    -------
-    tuple of (success: bool, message: str, active_trial: str | None, events: list, meta: dict)
-    """
-    import socket
+def fetch_events_from_qtm(port=50052, trial_filename=None, default_frame_rate=None, session_dir=None):
+    """Read-only, full-measurement snapshot from the guarded bridge protocol."""
+    from app.services.event_sync_service import event_rpc
+    from app.services.event_store import measurement_path
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.05)
-            is_open = (s.connect_ex(('127.0.0.1', port)) == 0)
-    except Exception:
-        is_open = False
-
-    if not is_open:
-        return False, f"QTM server not reachable on port {port}.", None, [], {}
-
-    # Get active trial name from OS window or fallback
-    active_trial = get_qtm_active_file()
-
-    try:
-        from app.services.settings_service import SettingsService
-        cfg_qtm = SettingsService().load_app_settings().qtm_grpc_location
-        if cfg_qtm and Path(cfg_qtm).is_dir():
-            qtm_dir = str(Path(cfg_qtm).resolve())
-        else:
-            cand1 = Path(__file__).resolve().parent.parent.parent / "QTM-GRPC"
-            cand2 = Path(__file__).resolve().parent.parent.parent / "Gait-lab-Vicon-to-QTM" / "QTM_GRPC"
-            if cand1.is_dir():
-                qtm_dir = str(cand1)
-            elif cand2.is_dir():
-                qtm_dir = str(cand2)
-            else:
-                qtm_dir = str(cand1)
-        if qtm_dir not in sys.path:
-            sys.path.insert(0, qtm_dir)
-        import grpc
-        import qtm_data_transfer_pb2
-        import qtm_data_transfer_pb2_grpc
-
-        with grpc.insecure_channel(f"localhost:{port}") as channel:
-            stub = qtm_data_transfer_pb2_grpc.QtmTkinterBridgeStub(channel)
-
-            # 1. Query active measurement if not detected via window
-            if not active_trial:
-                try:
-                    req_active = qtm_data_transfer_pb2.CommandToQtm(command_name="GetActiveMeasurement", command_args_json="{}")
-                    resp_active = stub.SendCommandToQtm(req_active, timeout=2)
-                    if resp_active and resp_active.success and resp_active.message:
-                        active_trial = resp_active.message.strip()
-                except Exception:
-                    pass
-
-            # If no measurement is currently open in QTM, there are no timeline events to query
-            if not active_trial:
-                return False, "No measurement currently open in QTM.", None, [], {}
-
-            # If trial_filename was given, verify match
-            if trial_filename and active_trial:
-                if not trial_names_match(trial_filename, active_trial):
-                    return False, f"QTM has '{active_trial}' open, not '{trial_filename}'.", active_trial, [], {}
-
-            # 2. Query timeline events
-            req_events = qtm_data_transfer_pb2.CommandToQtm(command_name="GetEvents", command_args_json="{}")
-            resp_events = stub.SendCommandToQtm(req_events, timeout=3)
-            if not resp_events or not resp_events.success:
-                return False, f"Failed to get events from QTM: {getattr(resp_events, 'message', 'No response')}", active_trial, [], {}
-
-            raw_payload = json.loads(resp_events.message) if resp_events.message else {}
-            # The bridge returns {} on read failure; a valid empty read has raw_events: [].
-            if not isinstance(raw_payload, (dict, list)) or raw_payload == {}:
-                return False, "QTM returned no valid event data.", active_trial, [], {}
-
-            # 3. Query frame count / frequency if available
-            freq = 0.0
-            total_frames = 0
-            if isinstance(raw_payload, dict):
-                freq = float(raw_payload.get("frequency") or 0.0)
-                total_frames = int(raw_payload.get("total_frames") or 0)
-                if not active_trial and raw_payload.get("active_trial"):
-                    active_trial = raw_payload["active_trial"]
-
-            # Fallback frequency resolution from default parameter or session C3D
-            if freq <= 0.0:
-                if default_frame_rate and default_frame_rate > 0:
-                    freq = float(default_frame_rate)
-                elif session_dir and (trial_filename or active_trial):
-                    s_stem = Path(trial_filename or active_trial or "").stem
-                    s_path = Path(session_dir)
-                    for cand in [s_path / f"{s_stem}.c3d", s_path / f"{s_stem.lower()}.c3d"]:
-                        if cand.is_file():
-                            try:
-                                import ezc3d
-                                c_obj = ezc3d.c3d(str(cand))
-                                freq = float(c_obj["header"]["points"]["frame_rate"])
-                                break
-                            except Exception:
-                                pass
-            if freq <= 0.0:
-                freq = 100.0
-
-            start_frame = recording_start_frame(raw_payload) if isinstance(raw_payload, dict) else recording_start_frame({})
-            # Parse events into clean_events list
-            clean_events: List[Dict[str, Any]] = []
-
-            # Format A: raw_events list [{"label": ..., "time": ..., "frame": ...}]
-            if isinstance(raw_payload, dict) and "raw_events" in raw_payload:
-                for ev in raw_payload["raw_events"]:
-                    lbl = normalize_qtm_event_label(ev.get("label", ""))
-                    if not lbl:
-                        continue
-                    t = float(ev.get("time", 0.0))
-                    f = time_to_frame(t, freq) if "time" in ev else int(ev["frame"])
-                    side = "R" if lbl.startswith("R") or "RIGHT" in lbl else ("L" if lbl.startswith("L") or "LEFT" in lbl else "")
-                    etype = "STRIKE" if "STRIKE" in lbl or "HS" in lbl else ("OFF" if "OFF" in lbl or "OF" in lbl else "")
-                    clean_events.append({
-                        "frame": f,
-                        "label": lbl,
-                        "time": t,
-                        "relative_frame": frame_to_index(f, start_frame),
-                        "side": side,
-                        "type": etype,
-                    })
-
-            # Format B: legacy events_dict { "RSTRIKE": { "FrameNo": [120, 245], "EventOffset": [...] } }
-            elif isinstance(raw_payload, dict):
-                ev_dict = raw_payload.get("events_dict", raw_payload)
-                for raw_lbl, item in ev_dict.items():
-                    if isinstance(item, dict) and "FrameNo" in item:
-                        norm_lbl = normalize_qtm_event_label(raw_lbl)
-                        frames = item["FrameNo"]
-                        offsets = item.get("EventOffset", [0.0] * len(frames))
-                        for f, off in zip(frames, offsets):
-                            if raw_payload.get("frame_convention") == "qtm_absolute_zero_based":
-                                f = sample_index_to_frame(f)
-                            t = frame_to_time(f, freq) + float(off) / freq
-                            side = "R" if norm_lbl.startswith("R") or "RIGHT" in norm_lbl else ("L" if norm_lbl.startswith("L") or "LEFT" in norm_lbl else "")
-                            etype = "STRIKE" if "STRIKE" in norm_lbl or "HS" in norm_lbl else ("OFF" if "OFF" in norm_lbl or "OF" in norm_lbl else "")
-                            clean_events.append({
-                                "frame": int(f),
-                                "label": norm_lbl,
-                                "time": t,
-                                "relative_frame": frame_to_index(f, start_frame),
-                                "side": side,
-                                "type": etype,
-                            })
-
-            elif isinstance(raw_payload, list):
-                for ev in raw_payload:
-                    if isinstance(ev, dict):
-                        lbl = normalize_qtm_event_label(ev.get("label", ""))
-                        if not lbl:
-                            continue
-                        t = float(ev.get("time", 0.0))
-                        f = time_to_frame(t, freq) if "time" in ev else int(ev["frame"])
-                        side = "R" if lbl.startswith("R") or "RIGHT" in lbl else ("L" if lbl.startswith("L") or "LEFT" in lbl else "")
-                        etype = "STRIKE" if "STRIKE" in lbl or "HS" in lbl else ("OFF" if "OFF" in lbl or "OF" in lbl else "")
-                        clean_events.append({
-                            "frame": f,
-                            "label": lbl,
-                            "time": t,
-                            "relative_frame": frame_to_index(f, start_frame),
-                            "side": side,
-                            "type": etype,
-                        })
-
-            for ev in clean_events:
-                trace_event("application_read", ev["label"], ev["frame"], freq, start_frame)
-            clean_events.sort(key=lambda x: int(x.get("frame", 0)))
-            meta = {
-                "source": "qtm_timeline",
-                "initial_frame_offset": int(raw_payload.get("initial_frame_offset", 0)) if isinstance(raw_payload, dict) else 0,
-                "recording_start_frame": start_frame,
-                "frame_convention": FRAME_CONVENTION,
-                "frame_rate": freq,
-                "total_frames": total_frames,
-                "active_trial": active_trial or "",
-            }
-            return True, f"Retrieved {len(clean_events)} event(s) from QTM.", active_trial, clean_events, meta
-
-    except Exception as e:
-        logger.warning("Error fetching events from QTM: %s", e)
-        return False, f"QTM gRPC fetch error: {e}", active_trial, [], {}
+        remote = event_rpc("GetEventSnapshot", port=port)
+        if trial_filename:
+            folder = session_dir or (Path(trial_filename).parent if Path(trial_filename).is_absolute() else None)
+            if folder is None or remote["measurement_path"] != measurement_path(folder, trial_filename):
+                return False, "QTM full session/measurement identity does not match", remote["measurement_path"], [], {}
+        meta = {key: value for key, value in remote.items() if key != "events"}
+        events = normalize_saved_events(remote["events"], meta)
+        return True, f"Retrieved {len(events)} events", remote["measurement_path"], events, meta
+    except Exception as error:
+        return False, str(error), None, [], {}
 
 
-def sync_qtm_events_to_session(
-    session_dir: str | Path,
-    trial_filenames: Optional[List[str]] = None,
-    port: int = 50052,
-    force: bool = False,
-) -> Tuple[bool, str, Optional[str], List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """
-    Check if QTM has timeline events for any trial in the current session,
-    and update the corresponding local trial event results if changed.
-
-    Returns
-    -------
-    tuple of (updated: bool, message: str, matched_filename: str | None, events: list, ev_info: dict | None)
-    """
-    s_dir = Path(session_dir)
-    if not s_dir.is_dir():
-        return False, "Session directory does not exist.", None, [], None
-
-    ok, msg, active_trial, clean_events, meta = fetch_events_from_qtm(port=port, session_dir=s_dir)
-    if not ok or not active_trial:
-        return False, msg, active_trial, clean_events, None
-
-    # Find which trial filename in the session matches active_trial
-    candidates = trial_filenames if trial_filenames else [f.name for f in s_dir.glob("*.qtm")] + [f.name for f in s_dir.glob("*.c3d")]
-    matched_file: Optional[str] = None
-    for cand in candidates:
-        if trial_names_match(cand, active_trial):
-            matched_file = cand
-            break
-
-    if not matched_file:
-        return False, f"QTM active trial '{active_trial}' does not match any trial in session.", active_trial, clean_events, None
-
-    # Resolve accurate capture frame rate from C3D file
-    matched_stem = Path(matched_file).stem
-    c3d_cand = s_dir / f"{matched_stem}.c3d"
-    if not c3d_cand.is_file():
-        for cand in s_dir.glob("*.c3d"):
-            if cand.stem.lower() == matched_stem.lower():
-                c3d_cand = cand
-                break
-    real_freq = None
-    if c3d_cand.is_file():
-        try:
-            import ezc3d
-            c_obj = ezc3d.c3d(str(c3d_cand))
-            real_freq = float(c_obj["header"]["points"]["frame_rate"])
-        except Exception:
-            pass
-
-    if real_freq and real_freq > 0:
-        meta["frame_rate"] = real_freq
-        for ev in clean_events:
-            ev_f = int(ev.get("frame", 0))
-            ev["time"] = frame_to_time(ev_f, real_freq)
-
-    # Compare with existing saved events for this trial
-    existing_info = load_trial_events(s_dir, matched_file)
-    existing_events = existing_info.get("events", []) if existing_info else []
-
-    existing_signature = [(int(e.get("frame", 0)), str(e.get("label", "")).upper()) for e in existing_events]
-    new_signature = [(int(e.get("frame", 0)), str(e.get("label", "")).upper()) for e in clean_events]
-
-    # Check if frame rate also changed from 100.0 to real_freq
-    existing_freq = float(existing_info.get("frame_rate") or 100.0) if existing_info else 100.0
-    freq_differ = real_freq and abs(existing_freq - real_freq) > 0.01
-
-    if not force and not freq_differ and existing_signature == new_signature:
-        return False, f"Events for {matched_file} are already in sync with QTM.", matched_file, clean_events, existing_info
-
-
-    # Events differ or frequency corrected! Save the updated events to results JSON and C3D
-    saved_meta = dict(existing_info.get("meta", {})) if existing_info else {}
-    saved_meta.update(meta)
-    if real_freq and real_freq > 0:
-        saved_meta["frame_rate"] = real_freq
-    saved_meta["synced_from_qtm"] = True
-    saved_meta["qtm_timeline_synced"] = True
-    ev_info = save_trial_events(s_dir, matched_file, clean_events, meta=saved_meta)
-
-    return True, f"Synchronized {len(clean_events)} event(s) from QTM for {matched_file}.", matched_file, clean_events, ev_info
+def sync_qtm_events_to_session(session_dir, trial_filenames=None, port=50052, force=False):
+    """Observe safely; only explicitly authorized outbox revisions may write to QTM."""
+    from app.services.event_sync_service import observe_session_events
+    folder = Path(session_dir)
+    trials = trial_filenames or [p.name for p in folder.glob("*.qtm")]
+    return observe_session_events(folder, trials, port, force)

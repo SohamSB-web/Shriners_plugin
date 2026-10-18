@@ -158,6 +158,9 @@ def process_trial(qtm_path):
     # set up per-trial logging
     dirname = os.path.dirname(qtm_path)
     base = os.path.splitext(os.path.basename(qtm_path))[0]
+    from app.services.event_service import load_trial_events
+    existing = load_trial_events(dirname, os.path.basename(qtm_path))
+    expected_revision = existing["meta"]["event_revision"] if existing else 0
     events_dir = os.path.join(dirname, "Events")
     os.makedirs(events_dir, exist_ok=True)
     logpath = os.path.join(events_dir, f"auto_event_{base}.log")
@@ -318,39 +321,22 @@ def process_trial(qtm_path):
                 'time': time_sec,
                 'relative_frame': int(f),
             })
-        with open(results_path, 'w') as rf:
-            json.dump({'events': serialisable, 'meta': detection_meta}, rf, indent=2)
-        # Clean up obsolete loose JSON in session root if present
-        legacy_results = os.path.join(dirname, f"auto_event_{base}_results.json")
-        if os.path.isfile(legacy_results) and os.path.abspath(legacy_results) != os.path.abspath(results_path):
-            try:
-                os.remove(legacy_results)
-            except OSError:
-                pass
-        logger.info(f"[STAGE 4] Results written to {results_path}")
-    except Exception as e:
-        logger.warning(f"[STAGE 4] Could not write results JSON: {e}")
+        from app.services.event_service import save_trial_events
+        saved = save_trial_events(dirname, os.path.basename(qtm_path), serialisable,
+                                  detection_meta, provenance="auto_label", expected_revision=expected_revision)
+        logger.info("Events committed locally at revision %s", saved["meta"]["event_revision"])
+    except Exception:
+        logger.exception("Event transaction failed; detection was not reported saved")
+        raise
 
     total_events = len(event_list)
     if total_events == 0:
         logger.info("[STAGE 7] COMPLETE. No events detected.")
         return
 
-    # ── STAGE 5: Write to respective dynamic C3D file ────────────────────────
-    c3d_path = os.path.join(dirname, f"{base}.c3d")
-    c3d_written = False
-    if os.path.isfile(c3d_path):
-        try:
-            c3d_written = write_events_to_c3d(c3d_path, serialisable, frame_rate=frame_rate, offset=offset)
-            if c3d_written:
-                logger.info(f"[STAGE 5] Events written directly to C3D file: {c3d_path}")
-                print(f"[STAGE 5] Events written directly to C3D file: {base}.c3d")
-            else:
-                logger.warning(f"[STAGE 5] Could not write events to C3D file: {c3d_path}")
-        except Exception as e:
-            logger.error(f"[STAGE 5] Failed writing events to C3D: {e}")
-    else:
-        logger.warning(f"[STAGE 5] Corresponding C3D file not found at {c3d_path}")
+    # JSON and C3D exports are verified, recoverable projections of the committed revision.
+    if saved["meta"].get("projection_error"):
+        logger.warning("Event export pending: %s", saved["meta"]["projection_error"])
 
     # ── 8-event sequence validation ──────────────────────────────────────────
     eight_ok = gait.validate_eight_event_sequence(event_list)
@@ -368,68 +354,12 @@ def process_trial(qtm_path):
             for v in detection_meta.get('sequence_violations', []):
                 logger.warning(f"[SEQUENCE] {v}")
 
-    # ── STAGE 6: Write to QTM timeline (ONLY if this trial is active in QTM) ─
-    qtm_active = get_qtm_active_measurement()
-    is_this_trial_open = False
-    if qtm_active:
-        import re
-        clean_target = re.sub(r'[\s_\-]+', ' ', os.path.splitext(os.path.basename(str(base)))[0].lower().strip().lstrip('*').rstrip('*')).strip()
-        clean_active = re.sub(r'[\s_\-]+', ' ', os.path.splitext(os.path.basename(str(qtm_active)))[0].lower().strip().lstrip('*').rstrip('*')).strip()
-        if clean_target and clean_active and clean_target == clean_active:
-            is_this_trial_open = True
-
-    total_events_written = 0
-    if is_this_trial_open:
-        logger.info(f"[STAGE 6] '{base}' is currently open in QTM. Writing {total_events} events to QTM timeline...")
-        # Clear prior events on this active trial first to prevent event accumulation
-        try:
-            from gapi import grpc_send_command
-            grpc_send_command("ClearEvents", json.dumps({"trial_name": base}))
-        except Exception:
-            pass
-
-        for frame, label in event_list:
-            timeline_frame = index_to_frame(frame, qtm_base)
-            try:
-                resp = SetEvent(label, timeline_frame, frame_rate, offset=offset, trial_name=base)
-                status = 'OK' if resp else 'FAILED'
-            except Exception as e:
-                resp = None
-                status = f'FAILED: {e}'
-            logger.info(f"[STAGE 6] Frame {timeline_frame} : {label} ... {status}")
-            if resp:
-                total_events_written += 1
-
-        if total_events_written > 0:
-            detection_meta['qtm_timeline_synced'] = True
-            try:
-                with open(results_path, 'w') as rf:
-                    json.dump({'events': serialisable, 'meta': detection_meta}, rf, indent=2)
-            except Exception as e:
-                logger.warning(f"[STAGE 6] Could not update results JSON synced flag: {e}")
-    else:
-        reason = f"QTM active file is '{qtm_active}'" if qtm_active else "QTM is not running"
-        logger.info(f"[STAGE 6] '{base}' is not open in QTM ({reason}). "
-                    f"Live timeline write skipped to prevent cross-trial contamination. "
-                    f"Events are safely stored inside {base}.c3d and results JSON.")
-        print(f"[STAGE 6] QTM live timeline skipped for '{base}' ({reason}); events saved inside {base}.c3d.")
-
-    # ── STAGE 7: Final summary ───────────────────────────────────────────────
-    rhs = label_counts.get(gait.AUTO_RHS_LABEL, 0)
-    rof = label_counts.get(gait.AUTO_ROF_LABEL, 0)
-    lhs = label_counts.get(gait.AUTO_LHS_LABEL, 0)
-    lof = label_counts.get(gait.AUTO_LOF_LABEL, 0)
-    pairing_str = 'PASS  every strike has a following off ' if detection_meta.get('pairing_valid') else 'FAIL  see warnings above'
-    if is_this_trial_open:
-        if total_events_written < total_events:
-            logger.warning(f"[STAGE 7] WARNING: only {total_events_written}/{total_events} "
-                           f"detected events were confirmed written to QTM.")
-        logger.info(f"[STAGE 7] DONE. Written to QTM timeline: RSTRIKE={rhs}, ROFF={rof}, LSTRIKE={lhs}, LOFF={lof}")
-    else:
-        logger.info(f"[STAGE 7] DONE. Labeled inside {base}.c3d: RSTRIKE={rhs}, ROFF={rof}, LSTRIKE={lhs}, LOFF={lof}")
-    logger.info(f"          Pairing check: {pairing_str}")
-    print(f"[STAGE 7] DONE. Written: RSTRIKE={rhs}, ROFF={rof}, LSTRIKE={lhs}, LOFF={lof}")
-    print(f"          Pairing check: {pairing_str}")
+    # One guarded attempt; another open trial leaves this explicit operation in the outbox.
+    from app.services.event_sync_service import observe_session_events
+    _, message, _, _, info = observe_session_events(dirname, [os.path.basename(qtm_path)])
+    status = info["meta"]["event_sync_status"] if info else "Pending QTM Sync"
+    logger.info("[STAGE 7] %s: %d committed events — %s (%s)", base, total_events, status, message)
+    print(f"[STAGE 7] {base}: {total_events} events committed — {status}")
 
 
 def main():

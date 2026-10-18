@@ -891,7 +891,7 @@ class CasePresentationPage(QWidget):
     def _load_default_norm(self) -> None:
         """Attempt to load default normative data file."""
         candidates = [
-            Path(__file__).resolve().parent.parent.parent.parent / "MAC_CasePresentation" / "TD_Ave.GCD",
+            Path(__file__).resolve().parent.parent.parent.parent / "MAC_CasePresentation" / "TD_Run_Ave.GCD",
             Path.cwd() / "MAC_CasePresentation" / "TD_Ave.GCD",
             Path(__file__).resolve().parent.parent.parent / "MAC_CasePresentation" / "TD_Ave.GCD",
         ]
@@ -1819,8 +1819,8 @@ class CasePresentationPage(QWidget):
                 l_name = settings.left_names[plot_idx] if plot_idx < len(settings.left_names) else ""
                 r_name = settings.right_names[plot_idx] if plot_idx < len(settings.right_names) else ""
                 norm_key = (
-                    GCDService.find_norm_variable(self._norm_data, var_name)
-                    or GCDService.find_norm_variable(self._norm_data, l_name)
+                    
+                    GCDService.find_norm_variable(self._norm_data, l_name)
                     or GCDService.find_norm_variable(self._norm_data, r_name)
                 )
                 if norm_key:

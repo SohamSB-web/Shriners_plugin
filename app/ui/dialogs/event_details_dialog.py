@@ -691,6 +691,13 @@ class EventDetailsDialog(QDialog):
         )
         self._save_qtm_btn.clicked.connect(self._on_save_and_update_qtm)
         btn_row.addWidget(self._save_qtm_btn)
+        remove_all = QPushButton("Remove All Events")
+        remove_all.clicked.connect(self._on_remove_all_events)
+        btn_row.addWidget(remove_all)
+        self._retry_export_btn = QPushButton("Retry Local Export")
+        self._retry_export_btn.clicked.connect(self._on_retry_local_export)
+        self._retry_export_btn.setVisible(bool(self.events_info.get("meta", {}).get("projection_error")))
+        btn_row.addWidget(self._retry_export_btn)
 
         # Close Button
         close_btn = QPushButton("Close")
@@ -920,34 +927,72 @@ class EventDetailsDialog(QDialog):
             self._table.setRowHeight(row_idx, 38)
 
             # 6. Action button (Remove event) wrapped in a centered container to prevent overlap
+            
+# Small Remove button, centered inside the table row
+           
+            # Small Remove button, centered inside the table row
             del_wrap = QWidget()
             del_wrap.setStyleSheet("background: transparent;")
+
             del_layout = QHBoxLayout(del_wrap)
-            del_layout.setContentsMargins(4, 2, 4, 2)
-            del_layout.setAlignment(Qt.AlignCenter)
+            del_layout.setContentsMargins(0, 0, 0, 0)
+            del_layout.setSpacing(0)
 
             del_btn = QPushButton("✕ Remove")
-            del_btn.setFont(QFont(FONT_FAMILY, 9, QFont.Bold))
+            del_btn.setFont(QFont(FONT_FAMILY, 8))
             del_btn.setCursor(Qt.PointingHandCursor)
-            del_btn.setFixedHeight(26)
-            del_btn.setMinimumWidth(82)
+            del_btn.setFixedSize(72, 20)
+            del_btn.setSizePolicy(
+                QSizePolicy.Fixed,
+                QSizePolicy.Fixed
+            )
+
             if self._is_dark:
-                del_btn.setStyleSheet(
-                    "QPushButton { background: transparent; color: #F87171; border: 1.5px solid #EF4444; border-radius: 4px; padding: 1px 8px; margin: 1px 2px; }"
-                    "QPushButton:hover { background: rgba(239, 68, 68, 0.2); color: #FFFFFF; border-color: #F87171; }"
-                    "QPushButton:pressed { background: rgba(239, 68, 68, 0.35); border-color: #EF4444; }"
-                )
+                del_btn.setStyleSheet("""
+                    QPushButton {
+                        background: transparent;
+                        color: #F87171;
+                        border: 1px solid #EF4444;
+                        border-radius: 3px;
+                        padding: 0px;
+                        margin: 0px;
+                    }
+                    QPushButton:hover {
+                        background: #7F1D1D;
+                        color: #FFFFFF;
+                    }
+                    QPushButton:pressed {
+                        background: #991B1B;
+                    }
+                """)
             else:
-                del_btn.setStyleSheet(
-                    "QPushButton { background: transparent; color: #DC2626; border: 1.5px solid #FCA5A5; border-radius: 4px; padding: 1px 8px; margin: 1px 2px; }"
-                    "QPushButton:hover { background: #FEF2F2; color: #991B1B; border-color: #EF4444; }"
-                    "QPushButton:pressed { background: #FEE2E2; border-color: #DC2626; }"
-                )
-            del_btn.clicked.connect(lambda _, r=row_idx: self._on_delete_row_event(r))
-            del_layout.addWidget(del_btn)
+                del_btn.setStyleSheet("""
+                    QPushButton {
+                        background: transparent;
+                        color: #DC2626;
+                        border: 1px solid #FCA5A5;
+                        border-radius: 3px;
+                        padding: 0px;
+                        margin: 0px;
+                    }
+                    QPushButton:hover {
+                        background: #FEF2F2;
+                        border-color: #EF4444;
+                    }
+                    QPushButton:pressed {
+                        background: #FEE2E2;
+                    }
+                """)
+
+            del_btn.clicked.connect(
+                lambda _, r=row_idx: self._on_delete_row_event(r)
+            )
+
+            del_layout.addWidget(del_btn, 0, Qt.AlignCenter)
             self._table.setCellWidget(row_idx, 5, del_wrap)
 
         self._table.blockSignals(False)
+
 
     def _update_metric_cards(self) -> None:
         """Compute counts by label and update cards + stride pairing pill."""
@@ -998,7 +1043,7 @@ class EventDetailsDialog(QDialog):
             s_fg = "#FDE68A" if self._is_dark else "#92400E"
             s_bdr = "#78350F" if self._is_dark else "#FCD34D"
         else:
-            self._sync_badge.setText("● Synced")
+            self._sync_badge.setText("● " + self.events_info.get("meta", {}).get("event_sync_status", "Events Saved"))
             s_bg = "#134E4A" if self._is_dark else "#F0FDF4"
             s_fg = "#2DD4BF" if self._is_dark else "#166534"
             s_bdr = "#14B8A6" if self._is_dark else "#BBF7D0"
@@ -1189,7 +1234,7 @@ class EventDetailsDialog(QDialog):
             QMessageBox.information(self, "QTM Synchronization", f"QTM has '{active_trial}' open, but no events were found on its timeline.")
             return
 
-        self.events_info["meta"] = dict(meta)
+        self.events_info.setdefault("meta", {}).update(meta)
         self.frame_rate = float(meta.get("frame_rate") or self.frame_rate)
         self._offset = int(meta.get("initial_frame_offset", self._offset))
         self._qtm_base = recording_start_frame(meta)
@@ -1208,20 +1253,22 @@ class EventDetailsDialog(QDialog):
         meta["initial_frame_offset"] = self._offset
 
         # 1. Save to session results JSON
-        updated_dict = save_trial_events(
-            session_dir=self.session_dir,
-            trial_filename=self.trial_filename,
-            events_list=self._events,
-            meta=meta,
-        )
+        try:
+            updated_dict = save_trial_events(
+                session_dir=self.session_dir, trial_filename=self.trial_filename,
+                events_list=self._events, meta=meta,
+                expected_revision=meta.get("event_revision", 0),
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            self._show_toast(f"Events not saved: {error}", "error")
+            return False
 
         # 2. Directly send to QTM timeline over gRPC
-        qtm_success, qtm_msg = send_events_to_qtm(
-            events_list=self._events,
-            frame_rate=self.frame_rate,
-            offset=self._offset,
-            trial_filename=self.trial_filename,
-        )
+        from app.services.event_sync_service import push_saved_events
+        from app.services.event_service import load_trial_events
+        qtm_success, qtm_msg = push_saved_events(self.session_dir, self.trial_filename)
+        updated_dict = load_trial_events(self.session_dir, self.trial_filename)
+        self.events_info = updated_dict
 
         self._has_unsaved_changes = False
         self._original_events = [dict(e) for e in self._events]
@@ -1233,7 +1280,7 @@ class EventDetailsDialog(QDialog):
         # 4. Show feedback
         if qtm_success:
             self._show_toast(
-                f"✓ Successfully synchronized {len(self._events)} events with QTM timeline & saved to session.",
+                f"{len(self._events)} events committed — {qtm_msg}",
                 "success",
             )
         else:
@@ -1241,6 +1288,29 @@ class EventDetailsDialog(QDialog):
                 f"✓ Saved {len(self._events)} events to session file. Note: {qtm_msg}",
                 "warning",
             )
+        return True
+
+    def _on_remove_all_events(self):
+        if QMessageBox.question(self, "Remove All Events",
+                f"Commit deletion of all gait events for {self.trial_filename}?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._events = []
+        self._has_unsaved_changes = True
+        self._refresh_all_views()
+        self._on_save_and_update_qtm()
+
+    def _on_retry_local_export(self):
+        from app.services.event_service import project_trial_events, load_trial_events
+        try:
+            project_trial_events(self.session_dir, self.trial_filename, self.events_info["meta"]["event_revision"])
+            self.events_info = load_trial_events(self.session_dir, self.trial_filename)
+            error = self.events_info["meta"].get("projection_error")
+            self._retry_export_btn.setVisible(bool(error))
+            self.events_updated.emit(self.trial_filename, self.events_info)
+            self._show_toast(error or "Local event exports verified.", "warning" if error else "success")
+        except (OSError, ValueError, RuntimeError) as error:
+            self._show_toast(str(error), "error")
 
     def _on_rerun_clicked(self) -> None:
         self.rerun_requested.emit(self.trial_filename)
@@ -1256,7 +1326,8 @@ class EventDetailsDialog(QDialog):
                 QMessageBox.Save,
             )
             if res == QMessageBox.Save:
-                self._on_save_and_update_qtm()
+                if not self._on_save_and_update_qtm():
+                    return
                 self.accept()
                 return
             elif res == QMessageBox.Cancel:

@@ -773,7 +773,7 @@ class DynamicAnalysisPage(QScrollArea):
         """Push stored events for this trial directly onto the QTM timeline if open."""
         session_dir = Path(os.path.dirname(self._session_path)) if self._session_path else Path(".")
         ev_info = load_trial_events(session_dir, trial_filename)
-        if not ev_info or not ev_info.get("events"):
+        if ev_info is None:
             QMessageBox.information(
                 self,
                 "No Events Found",
@@ -786,26 +786,43 @@ class DynamicAnalysisPage(QScrollArea):
         freq = float(meta.get("frequency") or ev_info.get("frame_rate") or 100.0)
         offset = int(ev_info.get("initial_frame_offset") or 0)
 
-        ok, msg = send_events_to_qtm(
-            events_list=ev_info["events"],
-            frame_rate=freq,
-            offset=offset,
-            trial_filename=trial_filename,
-        )
-        if ok:
-            QMessageBox.information(
-                self,
-                "QTM Timeline Synchronized",
-                f"✓ Successfully pushed {len(ev_info['events'])} events to QTM timeline for {trial_filename}!\n\n"
-                "Tip: Press Ctrl+S in QTM if you would like to save these events permanently into the .qtm file.",
-            )
+        from app.services.event_sync_service import push_saved_events
+        ok, msg = push_saved_events(session_dir, trial_filename)
+        updated = load_trial_events(session_dir, trial_filename)
+        self._on_trial_events_updated(trial_filename, updated)
+        if updated and updated["meta"].get("event_sync_status") == "QTM Conflict":
+            self._review_event_conflict(trial_filename)
+        elif ok:
+            QMessageBox.information(self, "QTM Events", msg)
         else:
-            QMessageBox.warning(
-                self,
-                "QTM Synchronization Skipped",
-                f"{msg}\n\n"
-                f"To display events on QTM's timeline, please open '{trial_filename}' in QTM first.",
-            )
+            QMessageBox.warning(self, "QTM Events", msg)
+
+    def _review_event_conflict(self, trial_filename):
+        from app.services.event_store import EventStore
+        from app.services.event_sync_service import event_rpc, resolve_event_conflict
+        session_dir = Path(self._session_path).parent
+        try:
+            remote = event_rpc("GetEventSnapshot")
+            record = EventStore(session_dir).read(trial_filename)
+            revision = record["revision"] if record else 0
+            local = record["payload"]["events"] if record else []
+            box = QMessageBox(self)
+            box.setWindowTitle("QTM Event Conflict")
+            box.setText(f"{trial_filename}: {len(local)} saved events; {len(remote['events'])} QTM events. Choose which version to keep.")
+            import json
+            box.setDetailedText(json.dumps({"saved": local, "QTM": remote["events"]}, indent=2, default=str))
+            keep_local = box.addButton("Keep Saved Events", QMessageBox.AcceptRole)
+            keep_qtm = box.addButton("Keep QTM Events", QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() not in (keep_local, keep_qtm):
+                return
+            info = resolve_event_conflict(session_dir, trial_filename,
+                                          "local" if box.clickedButton() is keep_local else "qtm",
+                                          revision, remote)
+            self._on_trial_events_updated(trial_filename, info)
+        except Exception as error:
+            QMessageBox.warning(self, "QTM Events", str(error))
 
     def _on_single_trial_pull_from_qtm(self, trial_filename: str) -> None:
         """
@@ -825,6 +842,10 @@ class DynamicAnalysisPage(QScrollArea):
         finally:
             QApplication.restoreOverrideCursor()
 
+        if trial_filename and (ev_info is None or ev_info.get("meta", {}).get("event_sync_status") == "QTM Conflict"):
+            self._review_event_conflict(trial_filename)
+            return
+
         if updated or (ev_info and ev_info.get("events")):
             row = self._trial_rows.get(trial_filename)
             if row and ev_info:
@@ -832,7 +853,7 @@ class DynamicAnalysisPage(QScrollArea):
                 if ev_info.get("total_events", 0) == 0:
                     if row._status in ("EVENTS LABELED", "EVENTS_LABELED"):
                         row.set_status("READY")
-                    row._events_btn.setText("Not Labeled — 0 Events")
+                    row.set_events_info(ev_info)
                 if ev_info.get("total_events", 0) > 0 and row._status in ("READY", "SELECTED"):
                     row.set_status("EVENTS LABELED")
             self._update_events_summary_badge()
@@ -869,13 +890,17 @@ class DynamicAnalysisPage(QScrollArea):
         finally:
             QApplication.restoreOverrideCursor()
 
+        if matched_file and (ev_info is None or ev_info.get("meta", {}).get("event_sync_status") == "QTM Conflict"):
+            self._review_event_conflict(matched_file)
+            return
+
         if matched_file and matched_file in self._trial_rows and ev_info:
             row = self._trial_rows[matched_file]
             row.set_events_info(ev_info)
             if ev_info.get("total_events", 0) == 0:
                 if row._status in ("EVENTS LABELED", "EVENTS_LABELED"):
                     row.set_status("READY")
-                row._events_btn.setText("Not Labeled — 0 Events")
+                row.set_events_info(ev_info)
             if ev_info.get("total_events", 0) > 0 and row._status in ("READY", "SELECTED"):
                 row.set_status("EVENTS LABELED")
             self._update_events_summary_badge()
@@ -912,100 +937,93 @@ class DynamicAnalysisPage(QScrollArea):
         if not session_dir.is_dir():
             return
 
+        from app.services.event_sync_service import start_event_observation
         self._is_syncing_events = True
-        try:
-            trial_names = list(self._trial_rows.keys())
-            updated, msg, matched_file, clean_events, ev_info = sync_qtm_events_to_session(
-                session_dir=session_dir,
-                trial_filenames=trial_names,
-                port=50052,
-                force=False,
-            )
-            if updated and matched_file and matched_file in self._trial_rows:
-                row = self._trial_rows[matched_file]
-                if ev_info:
-                    row.set_events_info(ev_info)
-                    if ev_info.get("total_events", 0) == 0:
-                        if row._status in ("EVENTS LABELED", "EVENTS_LABELED"):
-                            row.set_status("READY")
-                        row._events_btn.setText("Not Labeled — 0 Events")
-                    if ev_info.get("total_events", 0) > 0 and row._status in ("READY", "SELECTED"):
-                        row.set_status("EVENTS LABELED")
-                self._update_events_summary_badge()
-                logger.info("Auto-synced QTM event changes for %s: %s", matched_file, msg)
-        except Exception as e:
-            logger.debug("Background QTM event sync error: %s", e)
-        finally:
-            self._is_syncing_events = False
+        generation = self._analysis_generation
+        self._event_sync_worker = start_event_observation(
+            session_dir, list(self._trial_rows),
+            lambda result: self._on_event_sync_observed(generation, result),
+            lambda trial: self._on_event_sync_started(generation, trial))
+
+    def _on_event_sync_started(self, generation, trial):
+        if generation == self._analysis_generation and trial in self._trial_rows:
+            row = self._trial_rows[trial]
+            if row._events_info:
+                info = dict(row._events_info, meta=dict(row._events_info["meta"], event_sync_status="Syncing to QTM"))
+                row.set_events_info(info)
+
+    def _on_event_sync_observed(self, generation, result):
+        self._is_syncing_events = False
+        self._event_sync_worker = None
+        if generation != self._analysis_generation:
+            return
+        updated, message, trial, events, info = result
+        if info and trial in self._trial_rows:
+            self._trial_rows[trial].set_events_info(info)
+            self._update_events_summary_badge()
+        elif not trial and self._session_path:
+            for filename, row in self._trial_rows.items():
+                saved = load_trial_events(Path(self._session_path).parent, filename)
+                if saved:
+                    row.set_events_info(saved)
+        if message != getattr(self, "_last_event_sync_notice", None):
+            logger.info("QTM event observation: %s", message)
+            self._last_event_sync_notice = message
 
     def _setup_fs_watcher(self, session_dir: Path) -> None:
-        """Watch session directory and event results files for external edits or saves."""
-        if not hasattr(self, "_fs_watcher") or not self._fs_watcher:
-            return
-
-        current_files = self._fs_watcher.files()
-        if current_files:
-            self._fs_watcher.removePaths(current_files)
-        current_dirs = self._fs_watcher.directories()
-        if current_dirs:
-            self._fs_watcher.removePaths(current_dirs)
-
-        if session_dir.is_dir():
-            self._fs_watcher.addPath(str(session_dir))
-            for json_file in session_dir.glob("auto_event_*_results.json"):
-                self._fs_watcher.addPath(str(json_file))
+        paths = self._fs_watcher.files() + self._fs_watcher.directories()
+        if paths:
+            self._fs_watcher.removePaths(paths)
+        self._event_projection_stamps = {}
+        for directory in (session_dir, session_dir / "Events"):
+            if directory.is_dir():
+                self._fs_watcher.addPath(str(directory))
+                for path in directory.glob("auto_event_*_results.json"):
+                    self._fs_watcher.addPath(str(path))
+                    stat = path.stat()
+                    self._event_projection_stamps[str(path)] = (stat.st_mtime_ns, stat.st_size)
 
     def _on_fs_file_changed(self, path: str) -> None:
-        """Handle on-disk change to an auto_event results JSON file."""
-        p = Path(path)
         if not self._session_path:
             return
-        session_dir = Path(os.path.dirname(self._session_path))
-        if p.resolve().parent != session_dir.resolve():
+        path = Path(path)
+        session = Path(self._session_path).parent.resolve()
+        if path.resolve().parent not in {session, session / "Events"} or not path.is_file():
             return
-
-        # Re-add path in case editor replaced the file atomically
-        if p.is_file() and str(p) not in self._fs_watcher.files():
-            self._fs_watcher.addPath(str(p))
-
-        # Check which trial this file corresponds to
+        stamps = self._event_projection_stamps
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        if stamps.get(str(path)) == stamp:
+            return
+        stamps[str(path)] = stamp
+        if str(path) not in self._fs_watcher.files():
+            self._fs_watcher.addPath(str(path))
         import re
-        m = re.match(r"^auto_event_(.+)_results$", p.stem, re.IGNORECASE)
-        target_name = m.group(1) if m else p.stem
-        for fname, row in self._trial_rows.items():
-            if trial_names_match(fname, target_name):
-                ev_info = load_trial_events(session_dir, fname)
-                if ev_info:
-                    row.set_events_info(ev_info)
-                    if ev_info.get("total_events", 0) > 0 and row._status in ("READY", "SELECTED"):
-                        row.set_status("EVENTS LABELED")
+        match = re.match(r"^auto_event_(.+)_results$", path.stem, re.IGNORECASE)
+        if not match:
+            return
+        for trial in self._trial_rows:
+            if trial_names_match(trial, match.group(1)):
+                info = load_trial_events(session, trial)
+                if info:
+                    self._on_trial_events_updated(trial, info)
                 break
-        self._update_events_summary_badge()
 
     def _on_fs_directory_changed(self, dir_path: str) -> None:
-        """Watch for newly created auto_event files in session dir."""
-        d = Path(dir_path)
-        if not d.is_dir() or not self._session_path:
+        if not self._session_path:
             return
-        session_dir = Path(os.path.dirname(self._session_path))
-        if d.resolve() != session_dir.resolve():
+        session = Path(self._session_path).parent.resolve()
+        directory = Path(dir_path).resolve()
+        if directory not in {session, session / "Events"}:
             return
-        watched_files = set(self._fs_watcher.files())
-        for json_file in d.glob("auto_event_*_results.json"):
-            if str(json_file) not in watched_files:
-                self._fs_watcher.addPath(str(json_file))
-                import re
-                m = re.match(r"^auto_event_(.+)_results$", json_file.stem, re.IGNORECASE)
-                target_name = m.group(1) if m else json_file.stem
-                for fname, row in self._trial_rows.items():
-                    if trial_names_match(fname, target_name):
-                        ev_info = load_trial_events(session_dir, fname)
-                        if ev_info:
-                            row.set_events_info(ev_info)
-                            if ev_info.get("total_events", 0) > 0 and row._status in ("READY", "SELECTED"):
-                                row.set_status("EVENTS LABELED")
-                        break
-        self._update_events_summary_badge()
+        for folder in (session, session / "Events"):
+            if not folder.is_dir():
+                continue
+            if str(folder) not in self._fs_watcher.directories():
+                self._fs_watcher.addPath(str(folder))
+            for path in folder.glob("auto_event_*_results.json"):
+                self._on_fs_file_changed(str(path))
+        # SQLite WAL notifications never cause projection reads or QTM writes.
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -1240,7 +1258,7 @@ class DynamicAnalysisPage(QScrollArea):
                 else:
                     row.set_status("ERROR")
             self._update_events_summary_badge()
-            self._last_completion_message = "✓ Auto event labeling complete — events synced to timeline"
+            self._last_completion_message = ("Auto-Label events committed — " + ev_info.get("meta", {}).get("event_sync_status", "Events Saved")) if ev_info else "Auto-Label did not commit events"
         else:  # dynamic
             from app.services.session_organizer import find_gcd_file
             stem = Path(self._current_processing_file).stem

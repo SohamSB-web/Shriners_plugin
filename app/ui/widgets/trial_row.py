@@ -138,7 +138,7 @@ class TrialRowWidget(QFrame):
         self._events_btn = QPushButton(" Auto-Label")
         self._events_btn.setFont(QFont(FONT_FAMILY, FONT_SIZE_CAPTION, QFont.Bold))
         self._events_btn.setCursor(Qt.PointingHandCursor)
-        self._events_btn.setFixedWidth(106)
+        self._events_btn.setMinimumWidth(106)
         self._events_btn.setFixedHeight(26)
         self._events_btn.setIcon(create_tinted_icon("auto_event.svg", "#606060", 13))
         self._events_btn.setIconSize(QSize(13, 13))
@@ -269,7 +269,8 @@ class TrialRowWidget(QFrame):
         self._update_appearance()
 
     def _on_events_btn_clicked(self) -> None:
-        if self._events_info and self._events_info.get("total_events", 0) > 0:
+        if self._events_info and (self._events_info.get("total_events", 0) > 0
+                                 or self._events_info.get("meta", {}).get("event_revision")):
             self.view_events_clicked.emit(self.filename)
         else:
             self.auto_label_clicked.emit(self.filename)
@@ -479,6 +480,12 @@ class TrialRowWidget(QFrame):
             f"background-color: {pill_bg}; color: {pill_fg}; "
             f"border-radius: 13px; padding: 2px 10px; border: none; font-weight: 500;"
         )
+        if self._events_info and self._events_info.get("meta", {}).get("event_revision"):
+            meta = self._events_info["meta"]
+            status = meta.get("event_sync_status", "Events Saved")
+            self._events_btn.setText(f" {self._events_info.get('total_events', 0)} Events — {status}")
+            self._events_btn.setToolTip("\n".join(filter(None, [self._events_info.get("summary_text"), status,
+                                                           meta.get("event_sync_error"), meta.get("projection_error")])))
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:

@@ -110,6 +110,11 @@ class QtmCommandServicer(qtm_data_transfer_pb2_grpc.QtmTkinterBridgeServicer):
                 qtm.gui.message.add_message("Info",f"Command from Tkinter: {message_text}","info")
                 return qtm_data_transfer_pb2.Ack(message=f"Command '{cmd_name}' executed.", success=True)
             
+            elif cmd_name in {"GetEventSnapshot", "ApplyEventRevision"}:
+                from app.services.qtm_event_protocol import guarded_event_command
+                payload = guarded_event_command(qtm, qtm_event, tline, cmd_name, args)
+                return qtm_data_transfer_pb2.Ack(message=json.dumps(payload), success=True)
+
             elif cmd_name == "GetActiveMeasurement":
                 active_trial = get_current_open_trial_name()
                 return qtm_data_transfer_pb2.Ack(
