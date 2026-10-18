@@ -195,7 +195,7 @@ class PresentationSidebar(QFrame):
         layout.addStretch()
 
         self._active_category = "kinematics"
-        self._active_side = "L"
+        self._active_side = "LR"
         self._is_dark = False
         self.apply_theme(dark=False)
 
@@ -291,7 +291,7 @@ class PresentationSidebar(QFrame):
 
     def select_default(self) -> None:
         self._on_cat_clicked("kinematics")
-        self._on_side_clicked("L")
+        self._on_side_clicked("LR")
 
 
 class CasePresentationPage(QWidget):
@@ -309,7 +309,7 @@ class CasePresentationPage(QWidget):
 
         # Data state
         self._current_category = "kinematics"
-        self._current_side = "L"
+        self._current_side = "LR"
         self._trial_data: Dict[str, GCDData] = {}
         self._norm_data: Optional[GCDData] = None
         self._active_trial_filter: Set[str] = {
@@ -1058,6 +1058,27 @@ class CasePresentationPage(QWidget):
                 except Exception as e:
                     logger.warning("Error reading GCD %s: %s", gcd_path, e)
 
+        # Ensure all available GCD files in the session are discovered and populated
+        from app.services.session_organizer import find_all_gcd_files
+        all_session_gcds = find_all_gcd_files(session_dir)
+        for idx, gcd_f in enumerate(all_session_gcds):
+            if idx >= 10:
+                break
+            l_k = f"L{idx + 1}"
+            r_k = f"R{idx + 1}"
+            if l_k not in self._trial_data:
+                try:
+                    self._trial_data[l_k] = self._gcd_svc.read_gcd(str(gcd_f))
+                    logger.info("Auto-discovered Left trial %s: %s", l_k, gcd_f.name)
+                except Exception as e:
+                    logger.warning("Error reading GCD %s: %s", gcd_f, e)
+            if r_k not in self._trial_data:
+                try:
+                    self._trial_data[r_k] = self._gcd_svc.read_gcd(str(gcd_f))
+                    logger.info("Auto-discovered Right trial %s: %s", r_k, gcd_f.name)
+                except Exception as e:
+                    logger.warning("Error reading GCD %s: %s", gcd_f, e)
+
         # Find which trial key corresponds to MR Left and MR Right
         self._mr_left_key = None
         for i, trial_info in enumerate(sess.left_trials, start=1):
@@ -1202,12 +1223,43 @@ class CasePresentationPage(QWidget):
             )
             return
 
+        # Determine which trials are selected in the trial pills (Left "LL" section and Right "R" section)
+        selected_l = {k for k in self._active_trial_filter if k.startswith("L") and k in self._trial_data}
+        selected_r = {k for k in self._active_trial_filter if k.startswith("R") and k in self._trial_data}
+
+        if self._current_side == "L":
+            all_r = {k for k in self._trial_data if k.startswith("R")}
+            # If user has only Left side active, export Left trials (unless user specifically selected a subset of Right trials too)
+            if selected_r and selected_r != all_r:
+                selected_keys = selected_l | selected_r
+            else:
+                selected_keys = selected_l
+        elif self._current_side == "R":
+            all_l = {k for k in self._trial_data if k.startswith("L")}
+            if selected_l and selected_l != all_l:
+                selected_keys = selected_l | selected_r
+            else:
+                selected_keys = selected_r
+        else:  # "LR" (Bilateral)
+            selected_keys = selected_l | selected_r
+
+        if not selected_keys:
+            QMessageBox.warning(
+                self,
+                "No Trials Selected",
+                "No active trials are selected for export.\nPlease select at least one trial (e.g. L1, R1) in the trial filter pills before exporting.",
+            )
+            return
+
+        filtered_trials = {k: self._trial_data[k] for k in selected_keys}
+
         default_name = "Gait_Analysis_Report.pdf"
         if self._session_path:
             p = Path(self._session_path)
             mrn = p.parent.name if p.is_dir() else p.parent.parent.name
             dt = p.name if p.is_dir() else p.parent.name
-            default_name = f"Gait_Analysis_Report_{mrn}_{dt}.pdf"
+            trial_summary = "_".join(sorted(selected_keys, key=lambda x: (x[0], int(x[1:]))))
+            default_name = f"Gait_Analysis_Report_{mrn}_{dt}_{trial_summary}.pdf"
         default_dir = p if p.is_dir() else p.parent
         from app.services.session_organizer import get_reports_dir
         reports_dir = get_reports_dir(default_dir, create=True)
@@ -1227,8 +1279,9 @@ class CasePresentationPage(QWidget):
             pdf_path = CasePresentationPdfService.generate_report(
                 session_path=self._session_path or os.getcwd(),
                 output_pdf_path=save_path,
-                trials_data=self._trial_data,
+                trials_data=filtered_trials,
                 norm_data=self._norm_data,
+                selected_trials=selected_keys,
             )
         except Exception as e:
             QApplication.restoreOverrideCursor()
@@ -1562,7 +1615,9 @@ class CasePresentationPage(QWidget):
             self._meta_badge.setVisible(bool(text))
 
         settings = self._get_page_settings()
-        var_names = settings.left_names if side in ("L", "LR") else settings.right_names
+        left_vars = settings.left_names or []
+        right_vars = settings.right_names or []
+        num_plots = min(max(len(left_vars), len(right_vars)), 15)
 
         # Determine which trial keys to plot based on selected side (Left, Right, or Bilateral)
         if side == "L":
@@ -1598,16 +1653,21 @@ class CasePresentationPage(QWidget):
                 self._mean_legend_bar.setVisible(False)
 
         x = GCDService.get_gait_cycle_x()
-        num_plots = min(len(var_names), 15)
         # Clear only unused cells when the category actually removes a plot.
         for idx, canvas in enumerate(self._plot_grid.get_all_canvases()):
-            if (idx >= num_plots or not var_names[idx]) and getattr(canvas, "_last_plot_kwargs", None):
+            has_var = False
+            if idx < num_plots:
+                lv = left_vars[idx] if idx < len(left_vars) else ""
+                rv = right_vars[idx] if idx < len(right_vars) else ""
+                has_var = bool(lv or rv)
+            if not has_var and getattr(canvas, "_last_plot_kwargs", None):
                 canvas.clear_plot()
                 canvas.draw_idle()
 
         for plot_idx in range(num_plots):
-            var_name = var_names[plot_idx]
-            if not var_name:
+            l_var = left_vars[plot_idx] if plot_idx < len(left_vars) else ""
+            r_var = right_vars[plot_idx] if plot_idx < len(right_vars) else ""
+            if not l_var and not r_var:
                 continue
 
             title = settings.titles[plot_idx] if plot_idx < len(settings.titles) else f"Plot {plot_idx + 1}"
@@ -1641,7 +1701,7 @@ class CasePresentationPage(QWidget):
                     continue
 
                 limb = "Left" if key.startswith("L") else "Right"
-                var = settings.left_names[plot_idx] if limb == "Left" else settings.right_names[plot_idx]
+                var = l_var if limb == "Left" else r_var
                 if not var:
                     continue
 
@@ -1794,7 +1854,7 @@ class CasePresentationPage(QWidget):
             col = plot_idx % 3
             self._plot_grid.plot_at(
                 row, col,
-                graph_id=(os.path.normcase(os.path.abspath(self._session_path)), cat, side, var_name),
+                graph_id=(os.path.normcase(os.path.abspath(self._session_path)), cat, side, l_var or r_var or str(plot_idx)),
                 x_data=[x] * len(y_data),
                 y_data=y_data,
                 curve_ids=curve_ids,

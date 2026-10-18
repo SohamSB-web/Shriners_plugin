@@ -54,6 +54,41 @@ class CasePresentationPdfService:
         "#C026D3",  # T10: Magenta
     ]
 
+    TRIAL_COLOR_MAP: Dict[str, str] = {
+        # Left trials (cool clinical palette: Royal Blue, Green, Orange, Purple, Teal, Indigo, Olive, Deep Teal, Sky Blue, Magenta)
+        "L1": "#2563EB",  # Royal Blue
+        "L2": "#16A34A",  # Emerald Green
+        "L3": "#EA580C",  # Vibrant Orange
+        "L4": "#9333EA",  # Purple
+        "L5": "#0891B2",  # Cyan / Teal
+        "L6": "#4F46E5",  # Indigo
+        "L7": "#65A30D",  # Lime / Olive
+        "L8": "#0D9488",  # Deep Teal
+        "L9": "#0284C7",  # Deep Sky Blue
+        "L10": "#C026D3", # Magenta
+
+        # Right trials (warm clinical palette: Crimson Red, Amber, Deep Rose, Violet, Bronze, Bright Crimson, Burnt Orange, Ruby, Gold, Raspberry)
+        "R1": "#DC2626",  # Crimson Red
+        "R2": "#D97706",  # Amber / Gold
+        "R3": "#DB2777",  # Deep Rose
+        "R4": "#7C3AED",  # Violet
+        "R5": "#92400E",  # Warm Bronze
+        "R6": "#E11D48",  # Bright Crimson
+        "R7": "#C2410C",  # Burnt Orange
+        "R8": "#BE123C",  # Ruby Red
+        "R9": "#A16207",  # Golden Brown
+        "R10": "#9F1239", # Dark Raspberry
+    }
+
+    @classmethod
+    def get_trial_color(cls, trial_key: str) -> str:
+        """Return clinical color for a trial key, distinguishing Left (cool) and Right (warm)."""
+        if trial_key in cls.TRIAL_COLOR_MAP:
+            return cls.TRIAL_COLOR_MAP[trial_key]
+        if trial_key.startswith("L"):
+            return "#2563EB"
+        return "#DC2626"
+
     NORM_COLOR = "#D4D4D8"
     NORM_ALPHA = 0.55
     ZERO_LINE_COLOR = "#A1A1AA"
@@ -67,6 +102,7 @@ class CasePresentationPdfService:
         trials_data: Optional[Dict[str, GCDData]] = None,
         norm_data: Optional[GCDData] = None,
         patient_info: Optional[Dict[str, str]] = None,
+        selected_trials: Optional[Set[str] | List[str]] = None,
     ) -> str:
         """
         Generate a multi-page vector clinical PDF report.
@@ -77,6 +113,7 @@ class CasePresentationPdfService:
             trials_data: Preloaded dict of trial GCDData (e.g. {"L1": gcd, ...}).
             norm_data: Preloaded normative GCDData.
             patient_info: Optional dict with metadata keys: mrn, session_date, condition.
+            selected_trials: Optional set/list of specific trial keys to include (e.g. {"L1", "R1"}).
 
         Returns:
             Absolute string path to the created PDF file.
@@ -95,6 +132,11 @@ class CasePresentationPdfService:
         trials = dict(trials_data) if trials_data else {}
         if not trials:
             trials = cls._load_session_trials(session_dir, gcd_svc)
+
+        # Filter trials if a specific selection is given
+        if selected_trials is not None:
+            sel_set = set(selected_trials)
+            trials = {k: v for k, v in trials.items() if k in sel_set}
 
         # 2. Resolve / Load Normative Data
         if norm_data is None:
@@ -255,41 +297,74 @@ class CasePresentationPdfService:
         """Create a 15-plot (5 rows x 3 cols) landscape US Letter clinical report page."""
         fig = Figure(figsize=(11, 8.5), dpi=150)
         fig.patch.set_facecolor("white")
-
-        # Top Clinical Header
+        # Top Clinical Header: 4 non-overlapping vertical tiers
+        # Tier 1: Hospital Name & Confidentiality Badge
         fig.text(
             0.05, 0.965,
             p_info["hospital"].upper(),
-            fontsize=10.5,
+            fontsize=10.0,
             fontweight="bold",
             color="#0A0A0A",
             family="sans-serif",
         )
         fig.text(
-            0.05, 0.942,
+            0.95, 0.965,
+            "CONFIDENTIAL MEDICAL RECORD",
+            fontsize=7.5,
+            fontweight="bold",
+            color="#71717A",
+            ha="right",
+            family="sans-serif",
+        )
+
+        # Tier 2: Page Title (Unobstructed full-width row)
+        fig.text(
+            0.05, 0.943,
             page_title,
-            fontsize=12,
+            fontsize=11.5,
             fontweight="bold",
             color="#0A0A0A",
             family="sans-serif",
         )
+
+        # Tier 3: Patient Demographic and Session Metadata
         fig.text(
             0.05, 0.923,
             f"Patient MRN: {p_info['mrn']}    |    Session Date: {p_info['session_date']}    |    Condition: {p_info['condition']}    |    Exported: {p_info['export_time']}",
-            fontsize=8.5,
+            fontsize=8.0,
             color="#52525B",
             family="sans-serif",
         )
 
-        # Legend Banner on the right
-        legend_txt = "— L1..L10 (Left)   |   - - R1..R10 (Right)   |   ░ Norm (±1 SD)   |   | Toe-Off"
+        # Tier 4: Explicit List of Exported Legs & Clinical Legend (Never condensed to L1..L10 / R1..R10)
+        active_l = [f"L{i}" for i in range(1, 11) if f"L{i}" in trials]
+        active_r = [f"R{i}" for i in range(1, 11) if f"R{i}" in trials]
+
+        legend_parts = []
+        if active_l:
+            l_str = ", ".join(active_l)
+            legend_parts.append(f"Left ({l_str})")
+        if active_r:
+            r_str = ", ".join(active_r)
+            legend_parts.append(f"Right ({r_str})")
+        legend_parts.append("— Solid = Trials")
+        legend_parts.append("╍╍ Dotted = Mean")
+        legend_parts.append("░ Norm (±1 SD)")
+        legend_parts.append("┆ Toe-Off")
+
+        legend_txt = "TRIALS EXPORTED:   " + "     |     ".join(legend_parts)
         fig.text(
-            0.52, 0.942,
+            0.05, 0.903,
             legend_txt,
-            fontsize=8,
-            fontweight="medium",
-            color="#27272A",
+            fontsize=8.0,
+            fontweight="semibold",
+            color="#18181B",
             family="sans-serif",
+        )
+
+        # Subtle divider line below header
+        fig.add_artist(
+            plt.Line2D((0.05, 0.95), (0.892, 0.892), color="#E4E4E7", linewidth=0.75)
         )
 
         # 5 rows x 3 columns plot arrangement
@@ -382,29 +457,42 @@ class CasePresentationPdfService:
             # Zero baseline reference
             ax.axhline(0, lw=0.5, color=cls.ZERO_LINE_COLOR, zorder=2)
 
-            # Plot Left Trials (Solid lines)
-            for ti, t_key in enumerate([f"L{i}" for i in range(1, 11)]):
+            # Plot Left Trials (Normal solid lines)
+            l_traces: List[np.ndarray] = []
+            for t_key in [f"L{i}" for i in range(1, 11)]:
                 gcd = trials.get(t_key)
                 if gcd and l_var and gcd.has_variable(l_var):
                     arr = GCDService.get_variable_array(gcd, l_var)
                     if arr is not None and len(arr) == 101:
-                        c = cls.TRIAL_COLORS[ti % len(cls.TRIAL_COLORS)]
+                        l_traces.append(arr)
+                        c = cls.get_trial_color(t_key)
                         ax.plot(x, arr, color=c, lw=1.1, ls="-", zorder=4)
                         to = GCDService.get_toe_off(gcd, "Left")
                         if 0 < to < 100:
                             ax.axvline(to, lw=0.6, color=c, ls="--", zorder=3)
 
-            # Plot Right Trials (Dashed lines)
-            for ti, t_key in enumerate([f"R{i}" for i in range(1, 11)]):
+            # Plot Right Trials (Normal solid lines)
+            r_traces: List[np.ndarray] = []
+            for t_key in [f"R{i}" for i in range(1, 11)]:
                 gcd = trials.get(t_key)
                 if gcd and r_var and gcd.has_variable(r_var):
                     arr = GCDService.get_variable_array(gcd, r_var)
                     if arr is not None and len(arr) == 101:
-                        c = cls.TRIAL_COLORS[ti % len(cls.TRIAL_COLORS)]
-                        ax.plot(x, arr, color=c, lw=1.0, ls=(0, (3, 2)), zorder=4)
+                        r_traces.append(arr)
+                        c = cls.get_trial_color(t_key)
+                        ax.plot(x, arr, color=c, lw=1.1, ls="-", zorder=4)
                         to = GCDService.get_toe_off(gcd, "Right")
                         if 0 < to < 100:
-                            ax.axvline(to, lw=0.5, color=c, ls=":", zorder=3)
+                            ax.axvline(to, lw=0.6, color=c, ls="--", zorder=3)
+
+            # Only Mean curves should be plotted as dotted lines
+            if len(l_traces) >= 2:
+                mean_l = np.mean(l_traces, axis=0)
+                ax.plot(x, mean_l, color="#1D4ED8", lw=1.8, ls="--", zorder=5)
+
+            if len(r_traces) >= 2:
+                mean_r = np.mean(r_traces, axis=0)
+                ax.plot(x, mean_r, color="#B91C1C", lw=1.8, ls="--", zorder=5)
 
             # Styling & Title
             title = settings.titles[idx] if idx < len(settings.titles) else (l_var or r_var)
@@ -452,35 +540,67 @@ class CasePresentationPdfService:
         fig = Figure(figsize=(11, 8.5), dpi=150)
         fig.patch.set_facecolor("white")
 
-        # Header
+        # Collect metrics from active trials
+        active_l = [f"L{i}" for i in range(1, 11) if f"L{i}" in trials]
+        active_r = [f"R{i}" for i in range(1, 11) if f"R{i}" in trials]
+
+        if not active_l and not active_r:
+            active_l = ["L1"]
+
+        # Top Clinical Header: 4 non-overlapping vertical tiers
         fig.text(
             0.05, 0.965,
             p_info["hospital"].upper(),
-            fontsize=10.5,
+            fontsize=10.0,
             fontweight="bold",
             color="#0A0A0A",
             family="sans-serif",
         )
         fig.text(
-            0.05, 0.942,
+            0.95, 0.965,
+            "CONFIDENTIAL MEDICAL RECORD",
+            fontsize=7.5,
+            fontweight="bold",
+            color="#71717A",
+            ha="right",
+            family="sans-serif",
+        )
+        fig.text(
+            0.05, 0.943,
             "STRIDE & TEMPORAL-SPATIAL SUMMARY",
-            fontsize=12,
+            fontsize=11.5,
             fontweight="bold",
             color="#0A0A0A",
             family="sans-serif",
         )
         fig.text(
             0.05, 0.923,
-            f"Patient MRN: {p_info['mrn']}    |    Session Date: {p_info['session_date']}    |    Condition: {p_info['condition']}",
-            fontsize=8.5,
+            f"Patient MRN: {p_info['mrn']}    |    Session Date: {p_info['session_date']}    |    Condition: {p_info['condition']}    |    Exported: {p_info.get('export_time', '')}",
+            fontsize=8.0,
             color="#52525B",
             family="sans-serif",
         )
 
-        # Collect metrics from active trials
-        trial_keys = [k for k in [f"L{i}" for i in range(1, 11)] if k in trials]
-        if not trial_keys:
-            trial_keys = ["L1"]
+        legend_parts = []
+        if active_l:
+            legend_parts.append(f"Left ({', '.join(active_l)})")
+        if active_r:
+            legend_parts.append(f"Right ({', '.join(active_r)})")
+        legend_txt = "TRIALS EXPORTED:   " + "     |     ".join(legend_parts) if legend_parts else ""
+        if legend_txt:
+            fig.text(
+                0.05, 0.903,
+                legend_txt,
+                fontsize=8.0,
+                fontweight="semibold",
+                color="#18181B",
+                family="sans-serif",
+            )
+
+        # Divider line
+        fig.add_artist(
+            plt.Line2D((0.05, 0.95), (0.892, 0.892), color="#E4E4E7", linewidth=0.75)
+        )
 
         # Table metric definitions: (Display Name, Unit, Left Variable, Right Variable)
         metrics = [
@@ -498,11 +618,15 @@ class CasePresentationPdfService:
 
         # Extract values
         col_headers = ["Parameter", "Unit"]
-        for tk in trial_keys:
-            num = tk[1:]
-            col_headers.append(f"L{num}")
-            col_headers.append(f"R{num}")
-        col_headers.extend(["L Mean", "R Mean", "Norm TD"])
+        for tk in active_l:
+            col_headers.append(tk)
+        for tk in active_r:
+            col_headers.append(tk)
+        if active_l:
+            col_headers.append("L Mean")
+        if active_r:
+            col_headers.append("R Mean")
+        col_headers.append("Norm TD")
 
         # TD Normative References
         td_norms = {
@@ -524,27 +648,24 @@ class CasePresentationPdfService:
             l_vals: List[float] = []
             r_vals: List[float] = []
 
-            for tk in trial_keys:
+            for tk in active_l:
                 gcd = trials.get(tk)
-                # Left
                 lv = cls._get_scalar(gcd, l_var)
                 row.append(f"{lv:.2f}" if lv is not None else "--")
                 if lv is not None:
                     l_vals.append(lv)
 
-                # Right
-                rk = "R" + tk[1:]
-                rgcd = trials.get(rk, gcd)
-                rv = cls._get_scalar(rgcd, r_var)
+            for tk in active_r:
+                gcd = trials.get(tk)
+                rv = cls._get_scalar(gcd, r_var)
                 row.append(f"{rv:.2f}" if rv is not None else "--")
                 if rv is not None:
                     r_vals.append(rv)
 
-            # Left Mean
-            row.append(f"{np.mean(l_vals):.2f}" if l_vals else "--")
-            # Right Mean
-            row.append(f"{np.mean(r_vals):.2f}" if r_vals else "--")
-            # Norm
+            if active_l:
+                row.append(f"{np.mean(l_vals):.2f}" if l_vals else "--")
+            if active_r:
+                row.append(f"{np.mean(r_vals):.2f}" if r_vals else "--")
             row.append(td_norms.get(name, "--"))
 
             table_data.append(row)
@@ -555,11 +676,16 @@ class CasePresentationPdfService:
 
         # Custom column widths proportional to content
         total_cols = len(col_headers)
-        # 0: Parameter (~0.22), 1: Unit (~0.08), trial cols (~0.05 each), Means (~0.08 each), Norm (~0.10)
-        n_trial_cols = len(trial_keys) * 2
-        trial_col_w = max(0.045, (1.0 - (0.22 + 0.08 + 0.16 + 0.10)) / max(1, n_trial_cols))
-        col_widths = [0.22, 0.08] + [trial_col_w] * n_trial_cols + [0.08, 0.08, 0.10]
-        # Normalize sum to 1.0
+        n_trial_cols = len(active_l) + len(active_r)
+        n_mean_cols = (1 if active_l else 0) + (1 if active_r else 0)
+        param_w = 0.22
+        unit_w = 0.08
+        norm_w = 0.10
+        mean_w = 0.08 * n_mean_cols
+        rem_w = max(0.1, 1.0 - (param_w + unit_w + norm_w + mean_w))
+        trial_col_w = max(0.045, rem_w / max(1, n_trial_cols))
+
+        col_widths = [param_w, unit_w] + [trial_col_w] * n_trial_cols + [0.08] * n_mean_cols + [norm_w]
         w_sum = sum(col_widths)
         col_widths = [w / w_sum for w in col_widths]
 
