@@ -440,6 +440,7 @@ class CasePresentationPage(QWidget):
         self._open_btn.setCursor(Qt.PointingHandCursor)
         self._open_btn.clicked.connect(self._on_open_folder_clicked)
         top_row.addWidget(self._open_btn)
+        self._open_btn.hide()
 
         self._pdf_btn = QPushButton("Export PDF")
         self._pdf_btn.setFont(QFont(FONT_FAMILY, FONT_SIZE_SMALL, QFont.Bold))
@@ -1765,17 +1766,24 @@ class CasePresentationPage(QWidget):
                 if norm_key:
                     norm_arr = GCDService.get_variable_array(self._norm_data, norm_key)
                     norm_sd = GCDService.get_variable_sd_array(self._norm_data, norm_key)
-                    if norm_arr is not None and len(norm_arr) == 101:
-                        if norm_sd is not None and len(norm_sd) == 101 and np.any(norm_sd > 0.05):
-                            sd_band = norm_sd
-                        else:
-                            sd_band = 5.0
+                    
+                    if (
+                        norm_arr is not None
+                        and norm_sd is not None
+                        and len(norm_arr) == 101
+                        and len(norm_sd) == 101
+                        and np.isfinite(norm_arr).all()
+                        and np.isfinite(norm_sd).all()
+                        and np.all(norm_sd >= 0)
+                    ):
                         norm_y_mean = norm_arr
-                        norm_y_high = norm_arr + sd_band
-                        norm_y_low = norm_arr - sd_band
+                        norm_y_high = norm_arr + norm_sd
+                        norm_y_low = norm_arr - norm_sd
+
                         to_val = GCDService.get_toe_off(self._norm_data, "Left")
                         if to_val and 0 < to_val < 100:
                             norm_to = to_val
+
 
             title = settings.titles[plot_idx] if plot_idx < len(settings.titles) else ""
             y_min = settings.lower_limits[plot_idx] if plot_idx < len(settings.lower_limits) else -30

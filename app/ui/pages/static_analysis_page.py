@@ -857,14 +857,14 @@ class StaticAnalysisPage(QScrollArea):
         self._save_btn.setCursor(Qt.PointingHandCursor)
         self._save_btn.setFont(QFont(FONT_FAMILY, FONT_SIZE_BODY, FONT_WEIGHT_MEDIUM))
         self._save_btn.clicked.connect(self._on_save_clicked)
-        self._save_btn.setToolTip("Save the current calibration parameters locally for this session.")
+        self._save_btn.setToolTip("Save calibration and session XML locally, then update the selected QTM session once.")
         action_layout.addWidget(self._save_btn)
 
         self._fetch_btn = QPushButton("Fetch QTM")
         self._fetch_btn.setObjectName("secondaryButton")
         self._fetch_btn.setCursor(Qt.PointingHandCursor)
         self._fetch_btn.setFont(QFont(FONT_FAMILY, FONT_SIZE_BODY, FONT_WEIGHT_MEDIUM))
-        self._fetch_btn.setToolTip("Read the session of QTM's open measurement; otherwise use the selected session folder.")
+        self._fetch_btn.setToolTip("Read QTM parameters for the selected session once, without saving them.")
         self._fetch_btn.clicked.connect(self._on_fetch_clicked)
         action_layout.addWidget(self._fetch_btn)
 
@@ -1163,8 +1163,9 @@ class StaticAnalysisPage(QScrollArea):
                 if isinstance(widget, QLineEdit):
                     widget.setReadOnly(not enabled)
                 widget.setEnabled(enabled)
-        self._save_btn.setEnabled(enabled)
-        self._fetch_btn.setEnabled(enabled)
+        busy = self._manual_busy or self._anthro_sync.operation is not None
+        self._save_btn.setEnabled(enabled and not busy)
+        self._fetch_btn.setEnabled(enabled and not busy)
         self._run_btn.setEnabled(enabled and bool(self._filename))
 
     def _bind_processing_context(self):
@@ -1184,7 +1185,6 @@ class StaticAnalysisPage(QScrollArea):
         self._service.invalidate()
         self._bind_processing_context()
         self._anthro_sync.cancel()
-        self._anthro_sync.operation = None
         self._anthro_generation += 1
         self._anthro_context = None
         self._anthro_connected = False
@@ -1193,8 +1193,9 @@ class StaticAnalysisPage(QScrollArea):
         self._manual_requested_identity = {}
         self._manual_inflight_values = {}
         self._anthro_inflight_revisions = {}
-        self._auto_sync_timer.stop()
         self._manual_local_dirty = False
+        self._sync_details = {}
+        self._sync_details_btn.hide()
         self._session_path = self._filename = self._subject_name = self._loaded_py_path = ""
         self._is_populating = True
         try:
@@ -1709,20 +1710,10 @@ class StaticAnalysisPage(QScrollArea):
         self._manual_local_dirty = False
         self._sync_details = {}
         self._manual_requested_identity = {}
+        self._manual_busy = False
         self._anthro_sync = AnthropometricSyncService(self)
         self._anthro_sync.finished.connect(self._on_anthro_sync_finished)
         self._anthro_sync.write_finished.connect(self._on_anthro_write_finished)
-
-        self._auto_sync_timer = QTimer(self)
-        self._auto_sync_timer.setSingleShot(True)
-        self._auto_sync_timer.setInterval(600)
-        self._auto_sync_timer.timeout.connect(self._on_auto_sync_timer_timeout)
-
-        self._external_sync_timer = QTimer(self)
-        self._external_sync_timer.setInterval(1200)
-        self._external_sync_timer.timeout.connect(self._poll_external_qtm_sync)
-        self._last_external_mtime = {}
-        self._external_sync_timer.start()
 
         for name, widget in self._anthro_widgets.items():
             widget.setObjectName(name)
@@ -1751,7 +1742,6 @@ class StaticAnalysisPage(QScrollArea):
             signal = (widget.textEdited if isinstance(widget, QLineEdit) else
                       widget.activated if isinstance(widget, QComboBox) else widget.clicked)
             signal.connect(self._on_local_calibration_edited)
-        self._stack.currentChanged.connect(self._on_anthro_view_changed)
 
     def _sync_value(self, name):
         if name in self._anthro_widgets:
@@ -1781,93 +1771,12 @@ class StaticAnalysisPage(QScrollArea):
                     widget.setCurrentIndex(widget.findText(text))
 
     def _on_patient_choice(self, name):
-        if not getattr(self, "_is_populating", False):
-            self._anthro_dirty.add(name)
-            self._anthro_revisions[name] += 1
-            self._sync_field_to_xml_and_qtm(name)
+        self._on_anthro_edited(name)
 
     def _on_anthro_commit(self, name):
-        if not getattr(self, "_is_populating", False):
-            if hasattr(self, "_auto_sync_timer"):
-                self._auto_sync_timer.stop()
-            self._sync_field_to_xml_and_qtm(name)
-
-    def _on_auto_sync_timer_timeout(self):
-        if not getattr(self, "_is_populating", False) and self._anthro_dirty:
-            self._sync_fields_to_xml_and_qtm({name: self._sync_value(name) for name in list(self._anthro_dirty)})
-
-    def _poll_external_qtm_sync(self):
-        """
-        Background poll: check if session parameters in QTM or session.xml have been
-        modified externally, and automatically sync them with the GUI.
-        """
-        if getattr(self, "_is_populating", False):
-            return
-        if not self._session_path or not Path(self._session_path).is_file():
-            return
-        if hasattr(self, "_stack") and self._stack.currentWidget() is not self._config_widget:
-            return
-
-        session_xml = Path(self._session_path)
-        session_dir = session_xml.parent
-        qpr_file = session_dir / "data.qpr"
-
-        xml_mtime = session_xml.stat().st_mtime if session_xml.is_file() else 0
-        qpr_mtime = qpr_file.stat().st_mtime if qpr_file.is_file() else 0
-
-        last_xml = self._last_external_mtime.get("xml")
-        last_qpr = self._last_external_mtime.get("qpr")
-
-        if last_xml is None:
-            self._last_external_mtime["xml"] = xml_mtime
-            self._last_external_mtime["qpr"] = qpr_mtime
-            return
-
-        changed = False
-        if xml_mtime > last_xml:
-            self._last_external_mtime["xml"] = xml_mtime
-            changed = True
-        if qpr_mtime > last_qpr:
-            self._last_external_mtime["qpr"] = qpr_mtime
-            changed = True
-
-        if changed:
-            self._sync_from_external_sources()
-
-    def _sync_from_external_sources(self):
-        """Reload external session changes into GUI and sync all measurement blocks."""
-        if getattr(self, "_is_populating", False) or not self._session_path:
-            return
-        try:
-            tree = ET.parse(self._session_path)
-            root = tree.getroot()
-            fields_elem = root.find("Fields")
-            if fields_elem is not None:
-                updated_fields = {}
-                for child in fields_elem:
-                    val = child.text
-                    if val is not None and child.tag in self._sync_fields:
-                        updated_fields[child.tag] = val
-
-                for name, val in updated_fields.items():
-                    if name in self._anthro_dirty:
-                        continue
-                    current_gui_val = self._sync_value(name)
-                    if not same_field_value(name, current_gui_val, val):
-                        self._set_sync_value(name, val)
-                        self._manual_baseline[name] = self._sync_value(name)
-
-                # Ensure all Measurement blocks in session.xml match the session fields
-                update_session_xml(self._session_path, updated_fields)
-        except Exception as e:
-            logger.debug("External sync parse error: %s", e)
-
-        # If QTM is connected and idle, trigger background fetch to get live QTM in-memory values as well
-        if self._anthro_connected and self._anthro_sync.operation is None and not self._anthro_dirty:
-            self._start_manual_sync()
-
-    def _sync_field_to_xml_and_qtm(self, name: str) -> None:
-        self._sync_fields_to_xml_and_qtm({name: self._sync_value(name)})
+        if (name not in self._anthro_dirty
+                and not same_field_value(name, self._sync_value(name), self._manual_baseline.get(name))):
+            self._on_anthro_edited(name)
 
     def _sync_fields_to_xml_and_qtm(self, fields_to_sync: dict) -> None:
         if getattr(self, "_is_populating", False) or not self._session_path:
@@ -1882,30 +1791,56 @@ class StaticAnalysisPage(QScrollArea):
                 elif name in PATIENT_FIELDS:
                     validate_patient_field(name, val)
                 valid[name] = val
-            except ValueError:
-                continue
+            except ValueError as error:
+                self._sync_feedback(f"Parameters not saved — {error}",
+                    {"attempted_operation": "Save Parameters", "failed_parameters": {name: str(error)}}, error=True)
+                return
 
         if not valid:
             return
 
-        update_session_xml(self._session_path, valid)
+        details = {"attempted_operation": "Save Parameters", "gui_session": self._gui_session_identity(),
+                   "parameters": sorted(valid), "local_saved": False}
+        if not update_session_xml(self._session_path, valid):
+            self._anthro_dirty.update(valid)
+            details["error"] = "Session XML update failed"
+            self._sync_feedback("Calibration saved; session XML update failed.", details, error=True)
+            return
+        details["local_saved"] = True
         session_dir = Path(self._session_path).resolve().parent
-        self._anthro_sync.write_async(session_dir, valid, self._anthro_generation)
+        if not self._anthro_sync.write_async(session_dir, valid, self._anthro_generation):
+            details["error"] = "Another QTM operation is still running"
+            self._sync_feedback("Saved locally; QTM update failed", details, error=True)
+            return
+        self._manual_busy = True
+        self._save_btn.setEnabled(False)
+        self._fetch_btn.setEnabled(False)
+        self._sync_feedback("Saved locally; updating QTM…", details)
 
-        for name in valid:
-            self._anthro_dirty.discard(name)
-            self._manual_baseline[name] = self._sync_value(name)
-
-        synced_names = ", ".join(sorted(valid.keys()))
-        self._anthro_status(f"Updated {synced_names} in XML & QTM.")
+    def _finish_manual_operation(self, result):
+        operation = result.get("_operation")
+        if operation is not None and self._anthro_sync.operation is operation:
+            self._anthro_sync.operation = None
+        current = result.get("generation") == self._anthro_generation
+        if current or (operation is not None and self._anthro_sync.operation is None):
+            self._manual_busy = False
+            self._save_btn.setEnabled(bool(self._session_path))
+            self._fetch_btn.setEnabled(bool(self._session_path))
+        if current:
+            self._anthro_sync.operation = None
+        return current
 
     def _on_anthro_write_finished(self, result: dict) -> None:
-        if result.get("generation") != self._anthro_generation:
+        if not self._finish_manual_operation(result):
             return
-        if result.get("success"):
-            logger.info("QTM synced successfully for generation %s: %s", result.get("generation"), list(result.get("fields", {}).keys()))
-        else:
-            logger.warning("QTM sync warning: %s", result.get("error"))
+        details = {"attempted_operation": "Save Parameters", "gui_session": self._gui_session_identity(),
+                   "local_saved": True, "qtm_saved": bool(result.get("success")),
+                   "parameters": sorted(result.get("fields", {})),
+                   "error": result.get("error") or ("QTM did not accept the update" if not result.get("success") else "")}
+        details.update(result.get("diagnostics", {}))
+        details["failed_parameters"] = sorted(result.get("fields", {})) if not result.get("success") else []
+        self._sync_feedback("Parameters saved locally and to QTM." if result.get("success")
+                            else "Saved locally; QTM update failed", details, error=not result.get("success"))
 
     def _prepare_anthro_context(self, session_dir):
         context = (os.path.normcase(str(session_dir.resolve())),)
@@ -1917,18 +1852,16 @@ class StaticAnalysisPage(QScrollArea):
             self._manual_baseline = {}
             self._anthro_dirty.clear()
             self._manual_local_dirty = False
-            self._anthro_status("Session selected. Calibration edits are saved locally.")
+            self._sync_feedback("Session selected. Click Save Parameters to save edits.", {})
 
     def _on_anthro_edited(self, name):
+        if self._is_populating:
+            return
         self._anthro_dirty.add(name)
         self._anthro_revisions[name] += 1
         self._anthro_status(f"Editing {name}… Click Save Parameters to save all.")
-        if not getattr(self, "_is_populating", False) and hasattr(self, "_auto_sync_timer"):
-            self._auto_sync_timer.start()
 
     def _anthro_status(self, message, error=False):
-        self._sync_details = {}
-        self._sync_details_btn.hide()
         self._config_status.setToolTip(message)
         self._config_status.setText(message)
         self._config_status.setStyleSheet(
@@ -1983,7 +1916,7 @@ class StaticAnalysisPage(QScrollArea):
             self._manual_local_dirty = True
 
     def _on_fetch_clicked(self):
-        if self._anthro_sync.operation is not None:
+        if self._manual_busy or self._anthro_sync.operation is not None:
             self._anthro_status("A QTM operation is still running. Please wait.")
             return
         if self._has_unsaved_sync_edits():
@@ -1999,17 +1932,15 @@ class StaticAnalysisPage(QScrollArea):
         self._manual_requested_identity = self._gui_session_identity()
         self._anthro_inflight_revisions = dict(self._anthro_revisions)
         context = self._anthro_context[0] if self._anthro_context else ""
-        if self._anthro_sync.request(context, self._anthro_generation):
+        if self._anthro_sync.request(context, self._anthro_generation, follow_active=False):
+            self._manual_busy = True
             self._save_btn.setEnabled(False)
             self._fetch_btn.setEnabled(False)
             self._anthro_status("Fetching QTM parameters…")
 
     def _on_anthro_sync_finished(self, result):
-        if result["generation"] != self._anthro_generation:
+        if not self._finish_manual_operation(result):
             return
-        self._anthro_sync.operation = None
-        self._save_btn.setEnabled(bool(self._session_path))
-        self._fetch_btn.setEnabled(bool(self._session_path))
         snapshot = result["snapshot"]
         details = {"attempted_operation": "Fetch QTM", "gui_session": self._manual_requested_identity,
                    "qtm_measurement": result.get("measurement"), "failed_parameters": {}}
@@ -2026,11 +1957,9 @@ class StaticAnalysisPage(QScrollArea):
         details.update(snapshot.get("resolution", {}))
         switched = self._anthro_context is None or snapshot["context"] != self._anthro_context[0]
         if switched:
-            folder = Path(snapshot["context"])
-            if not (folder / "session.xml").is_file():
-                self._sync_feedback("Parameters not fetched — the QTM session has no session.xml.", details, error=True)
-                return
-            self.set_session(str(folder / "session.xml"))
+            self._sync_feedback("Parameters not fetched — QTM returned another session. Select the intended session explicitly.",
+                                details, error=True)
+            return
         self._anthro_connected = True
         errors = dict(snapshot["errors"])
         missing = self._sync_fields - snapshot["fields"].keys()
@@ -2041,7 +1970,7 @@ class StaticAnalysisPage(QScrollArea):
                 continue
             unchanged = (self._anthro_revisions[name] == self._anthro_inflight_revisions.get(name)
                          and same_field_value(name, self._sync_value(name), self._manual_inflight_values.get(name)))
-            if unchanged or switched:
+            if unchanged:
                 self._set_sync_value(name, snapshot["fields"][name])
                 self._anthro_dirty.discard(name)
                 self._manual_baseline[name] = self._sync_value(name)
@@ -2052,26 +1981,13 @@ class StaticAnalysisPage(QScrollArea):
         message = "Some QTM parameters could not be fetched." if errors else "Parameters fetched."
         if self._anthro_dirty:
             message += " New edits retained."
+        active_context = result.get("active_context")
+        if active_context and active_context != snapshot["context"]:
+            message += " QTM has another session open; selected session unchanged."
+            details["active_qtm_session"] = active_context
         self._sync_feedback(message, details, error=bool(errors))
 
-    def _on_anthro_view_changed(self, index):
-        if hasattr(self, "_anthro_sync") and self._stack.currentWidget() is not self._config_widget:
-            self._anthro_sync.cancel()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        if hasattr(self, "_external_sync_timer"):
-            self._external_sync_timer.start()
-
-    def hideEvent(self, event):
-        if hasattr(self, "_external_sync_timer"):
-            self._external_sync_timer.stop()
-        self._anthro_sync.cancel()
-        super().hideEvent(event)
-
     def closeEvent(self, event):
-        if hasattr(self, "_external_sync_timer"):
-            self._external_sync_timer.stop()
         self._anthro_sync.cancel()
         super().closeEvent(event)
 
@@ -2236,12 +2152,11 @@ class StaticAnalysisPage(QScrollArea):
         return str(target_file)
 
     def _on_save_clicked(self) -> None:
-        if self._anthro_sync.operation is not None:
-            self._anthro_status("Fetch QTM is still running. Please wait.")
+        if self._manual_busy or self._anthro_sync.operation is not None:
+            self._anthro_status("A QTM operation is still running. Please wait.")
             return
         if self._save_static_parameters() is not None:
             self._sync_fields_to_xml_and_qtm({name: self._sync_value(name) for name in self._sync_fields})
-            self._anthro_status("Parameters saved successfully.")
 
     # ═══════════════════════════════════════════════════════════════════
     #  Processing Workflow

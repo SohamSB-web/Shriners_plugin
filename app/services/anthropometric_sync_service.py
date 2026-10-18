@@ -539,22 +539,29 @@ class QtmAnthropometricClient:
 
 
 class _SyncOperation(QRunnable):
-    def __init__(self, service, context, generation):
+    def __init__(self, service, context, generation, follow_active=True):
         super().__init__()
         self.service, self.context, self.generation = service, context, generation
         self.cancelled = threading.Event()
+        self.follow_active = follow_active
 
     def run(self):
         result = {"generation": self.generation, "snapshot": None, "error": "", "diagnostics": {},
-                  "requested_context": os.path.normcase(str(Path(self.context).resolve()))}
+                  "requested_context": os.path.normcase(str(Path(self.context).resolve())), "_operation": self}
         try:
+            if self.cancelled.is_set():
+                raise RuntimeError("Fetch cancelled")
             active = self.service.client.active_session_dir()
+            result["active_context"] = os.path.normcase(str(Path(active).resolve())) if active else None
             result["measurement"] = self.service.client.active_measurement
             if not active and not self.context:
                 raise RuntimeError("Open a QTM measurement or select a session folder before fetching")
-            snapshot = self.service.client.read(active or self.context)
+            target = (active or self.context) if self.follow_active else (self.context or active)
+            snapshot = self.service.client.read(target)
             current = self.service.client.active_session_dir()
-            if current and os.path.normcase(str(Path(current).resolve())) != snapshot["context"]:
+            expected = snapshot["context"] if self.follow_active else result["active_context"]
+            current_context = os.path.normcase(str(Path(current).resolve())) if current else None
+            if current_context != expected and (not self.follow_active or current):
                 raise RuntimeError("QTM session changed during Fetch; review again")
             if self.cancelled.is_set():
                 raise RuntimeError("Fetch cancelled")
@@ -580,10 +587,10 @@ class AnthropometricSyncService(QObject):
         self.client = QtmAnthropometricClient()
         self.operation = None
 
-    def request(self, context, generation):
+    def request(self, context, generation, follow_active=True):
         if self.operation is not None:
             return False
-        self.operation = _SyncOperation(self, context, generation)
+        self.operation = _SyncOperation(self, context, generation, follow_active)
         QThreadPool.globalInstance().start(self.operation)
         return True
 
@@ -592,6 +599,8 @@ class AnthropometricSyncService(QObject):
             self.operation.cancelled.set()
 
     def write_async(self, context, fields, generation=0):
+        if self.operation is not None:
+            return False
         op = _WriteOperation(self, context, fields, generation)
         self.operation = op
         QThreadPool.globalInstance().start(op)
@@ -606,12 +615,15 @@ class _WriteOperation(QRunnable):
 
     def run(self):
         try:
+            if self.cancelled.is_set():
+                raise RuntimeError("Save cancelled before QTM write")
             success = self.service.client.write(self.session_dir, self.fields)
             self.service.write_finished.emit({
                 "success": success,
                 "error": None,
                 "generation": self.generation,
-                "fields": self.fields
+                "fields": self.fields,
+                "_operation": self
             })
         except Exception as error:
             try:
@@ -619,7 +631,9 @@ class _WriteOperation(QRunnable):
                     "success": False,
                     "error": str(error),
                     "generation": self.generation,
-                    "fields": self.fields
+                    "fields": self.fields,
+                    "_operation": self,
+                    "diagnostics": getattr(error, "details", {})
                 })
             except (RuntimeError, AttributeError):
                 pass

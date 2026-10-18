@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 from app.services.event_service import check_event_pairing, fetch_events_from_qtm, save_trial_events, send_events_to_qtm
@@ -604,6 +605,18 @@ class EventDetailsDialog(QDialog):
         tb_layout.setContentsMargins(8, 4, 8, 4)
         self._toast_label = QLabel("")
         self._toast_label.setFont(QFont(FONT_FAMILY, FONT_SIZE_SMALL, QFont.Bold))
+
+        # Show the complete status message across multiple lines.
+        self._toast_label.setWordWrap(True)
+        self._toast_label.setMinimumWidth(0)
+        self._toast_label.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Preferred
+        )
+        self._toast_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse
+        )
+
         tb_layout.addWidget(self._toast_label)
         layout.addWidget(self._toast_banner)
 
