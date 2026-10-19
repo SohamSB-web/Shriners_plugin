@@ -8,6 +8,7 @@ Verification test for Opening MAC Case for Particular Sessions:
 """
 import sys
 import os
+import tempfile
 from pathlib import Path
 
 # Add project root to sys.path
@@ -35,7 +36,7 @@ if sys.platform == "win32":
                 pass
 
 from PySide6.QtWidgets import QApplication
-from app.models.data_models import SessionInfo
+from app.models.data_models import SessionInfo, TrialInfo
 from app.ui.pages.patients_page import SessionRow, PatientsPage
 from app.ui.pages.case_presentation_page import CasePresentationPage
 from app.ui.main_window import MainWindow
@@ -43,6 +44,11 @@ from app.ui.main_window import MainWindow
 
 def test_particular_session_workflow():
     app = QApplication.instance() or QApplication(sys.argv)
+    temporary = tempfile.TemporaryDirectory()
+    folders = [Path(temporary.name) / f"Session{i}" for i in range(1, 4)]
+    for folder in folders:
+        folder.mkdir()
+        (folder / "Dynamic 1.GCD").write_text("!LeftTrunkTilt\n" + "1\n" * 101)
 
     print("============================================================")
     print("TESTING PARTICULAR SESSION OPENING IN MAC CASE PRESENTATION")
@@ -89,19 +95,22 @@ def test_particular_session_workflow():
     assert hasattr(pres_page, "_session_combo")
 
     sess1 = SessionInfo(
-        directory=r"C:\Mock\Session1",
+        directory=str(folders[0]),
+        left_trials=[TrialInfo(gcd_filename="Dynamic 1.GCD")],
         analysis_date="2026-10-01",
         study_type="Pre-Op",
         activity_type="Barefoot",
     )
     sess2 = SessionInfo(
-        directory=r"C:\Mock\Session2",
+        directory=str(folders[1]),
+        left_trials=[TrialInfo(gcd_filename="Dynamic 1.GCD")],
         analysis_date="2026-10-15",
         study_type="Post-Op",
         activity_type="Orthosis",
     )
     sess3 = SessionInfo(
-        directory=r"C:\Mock\Session3",
+        directory=str(folders[2]),
+        left_trials=[TrialInfo(gcd_filename="Dynamic 1.GCD")],
         analysis_date="2026-11-01",
         study_type="Follow-Up",
         activity_type="Barefoot",
@@ -139,7 +148,9 @@ def test_particular_session_workflow():
     main_win = MainWindow()
     main_win.show()
     app.processEvents()
-    # Mock sessions in main_win._patients
+    # Explicitly select patient/session data before requesting presentation.
+    main_win._patients.session_rows[0].set_directory(str(folders[0]))
+    main_win._patients.session_rows[1].set_directory(str(folders[1]))
     main_win._patients.session_rows[0].date_edit.setText("2026-10-01")
     main_win._patients.session_rows[0].study_combo.setCurrentText("Pre-op")
     main_win._patients.session_rows[1].date_edit.setText("2026-10-15")
@@ -160,6 +171,8 @@ def test_particular_session_workflow():
     print("ALL PARTICULAR SESSION TESTS PASSED PERFECTLY!")
     print("============================================================")
     main_win.close()
+    pres_page.close()
+    temporary.cleanup()
 
 
 if __name__ == "__main__":

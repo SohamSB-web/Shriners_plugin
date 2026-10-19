@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from app.models.data_models import AppSettings
 from app.services.settings_service import SettingsService
-from app.ui.pages.case_presentation_page import CasePresentationPage
+from app.ui.pages.case_presentation_page import CasePresentationPage, NO_PRESENTATION_SELECTION, NO_PROCESSED_TRIALS
 from app.ui.pages.dashboard_page import DashboardPage
 from app.ui.pages.dynamic_analysis_page import DynamicAnalysisPage
 from app.ui.pages.patients_page import PatientsPage
@@ -477,6 +477,7 @@ class MainWindow(QMainWindow):
         self._static_page.session_selected.connect(self._on_calibration_session_selected)
         self._patients.proceed_to_analysis.connect(self._on_proceed_from_patients)
         self._patients.open_session_presentation.connect(self._on_open_single_session_presentation)
+        self._presentation_page.presentation_unavailable.connect(self._redirect_from_presentation)
 
         # QTM connection
         self._qtm.connection_changed.connect(self._on_qtm_connection)
@@ -499,6 +500,14 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _navigate_to(self, page_key: str) -> None:
+        if page_key == "case_presentation" and (
+                not self._patients.has_selected_patient() or not self._presentation_page._trial_data
+                or not self._presentation_page._session_path
+                or not any(Path(gcd.file_path).is_file() for gcd in self._presentation_page._trial_data.values())):
+            message = (NO_PROCESSED_TRIALS if self._patients.has_selected_patient()
+                       and getattr(self, "_presentation_requested_directory", "") else NO_PRESENTATION_SELECTION)
+            self._redirect_from_presentation(message)
+            return
         page = self._page_map.get(page_key)
         if page:
             self._pages.setCurrentWidget(page)
@@ -507,6 +516,21 @@ class MainWindow(QMainWindow):
                 self._workflow_bar.set_active_stage(page_key)
             self._status_label.setText(f"{self.PAGE_TITLES.get(page_key, page_key.title())} active")
             logger.info("Navigated to: %s", page_key)
+
+    def _redirect_from_presentation(self, message: str) -> None:
+        self._presentation_page.clear_session()
+        self._patients.show_presentation_notice(message)
+        self._presentation_notice_message = message
+        if not getattr(self, "_presentation_redirect_pending", False):
+            self._presentation_redirect_pending = True
+            QTimer.singleShot(0, self._show_patients_for_presentation)
+
+    def _show_patients_for_presentation(self) -> None:
+        self._presentation_redirect_pending = False
+        if self._presentation_page._trial_data:
+            return  # A valid explicit selection supersedes an older queued redirect.
+        self._navigate_to("patients")
+        self._status_label.setText(self._presentation_notice_message)
 
     # ── Workflow Transitions ────────────────────────────────────────
 
@@ -528,12 +552,17 @@ class MainWindow(QMainWindow):
     def _on_dynamic_to_presentation(self, session_path: str) -> None:
         """Fallback direct transition to MAC Case Presentation (for tests / legacy callers)."""
         self._workflow_bar.mark_completed("dynamic_analysis")
-        self._navigate_to("case_presentation")
-        QApplication.processEvents()
-        self._presentation_page.load_folder(session_path)
+        self._patients.load_session(session_path)
+        self._on_proceed_from_patients()
 
     @Slot(str)
     def _on_patient_selected(self, mrn: str) -> None:
+        if mrn != getattr(self, "_presentation_patient", ""):
+            self._presentation_page.clear_session()
+            self._presentation_requested_directory = ""
+            self._presentation_patient = mrn
+            if self._pages.currentWidget() is self._presentation_page:
+                self._redirect_from_presentation(NO_PRESENTATION_SELECTION)
         self._header.set_patient(mrn)
         self._dashboard.update_patient(mrn)
         self._status_label.setText(f"Patient: {mrn}")
@@ -545,6 +574,8 @@ class MainWindow(QMainWindow):
         if identity == self._active_analysis_context:
             return
         self._active_analysis_context = identity
+        self._presentation_page.clear_session()
+        self._presentation_requested_directory = ""
         self._dynamic_page.clear_session()
         self._workflow_bar.mark_completed("static_analysis", False)
         self._workflow_bar.mark_completed("dynamic_analysis", False)
@@ -586,23 +617,25 @@ class MainWindow(QMainWindow):
     def _on_proceed_from_patients(self) -> None:
         """User configured sessions in Patients page -> route to MAC Case Presentation."""
         sessions = self._patients.get_all_sessions()
-        display_mode = self._patients.get_display_mode()
-        self._workflow_bar.mark_completed("patients")
-        self._navigate_to("case_presentation")
-        QApplication.processEvents()
-        self._presentation_page.load_session_data(sessions, active_session_index=0, display_mode=display_mode)
+        index = next((i for i, session in enumerate(sessions) if session.directory), 0)
+        self._on_open_single_session_presentation(index)
 
     @Slot(int)
     def _on_open_single_session_presentation(self, session_idx: int) -> None:
         """User clicked 'View MAC Case' for a specific session row."""
         sessions = self._patients.get_all_sessions()
+        if not self._patients.has_selected_patient():
+            self._redirect_from_presentation(NO_PRESENTATION_SELECTION)
+            return
+        self._presentation_requested_directory = sessions[session_idx].directory if 0 <= session_idx < len(sessions) else ""
         display_mode = self._patients.get_display_mode()
+        if not self._presentation_page.load_session_data(
+            sessions, active_session_index=session_idx, display_mode=display_mode
+        ):
+            return
+        self._patients.show_presentation_notice("")
         self._workflow_bar.mark_completed("patients")
         self._navigate_to("case_presentation")
-        QApplication.processEvents()
-        self._presentation_page.load_session_data(
-            sessions, active_session_index=session_idx, display_mode=display_mode
-        )
 
     @Slot(bool)
     def _on_qtm_connection(self, connected: bool) -> None:
