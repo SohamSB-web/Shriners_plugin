@@ -927,10 +927,6 @@ class EventDetailsDialog(QDialog):
             self._table.setRowHeight(row_idx, 38)
 
             # 6. Action button (Remove event) wrapped in a centered container to prevent overlap
-            
-# Small Remove button, centered inside the table row
-           
-            # Small Remove button, centered inside the table row
             del_wrap = QWidget()
             del_wrap.setStyleSheet("background: transparent;")
 
