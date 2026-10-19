@@ -644,6 +644,11 @@ class PatientsPage(QScrollArea):
 
         self._layout.addLayout(header_row)
 
+        self._presentation_notice = QLabel()
+        self._presentation_notice.setWordWrap(True)
+        self._presentation_notice.hide()
+        self._layout.addWidget(self._presentation_notice)
+
         # ── Patient card ───────────────────────────────────────────
         patient_card = SectionCard("Patient Information")
 
@@ -877,6 +882,8 @@ class PatientsPage(QScrollArea):
         for row in self.session_rows:
             row.clear_directory()
         self._current_patient_dir = patient_path
+        self._selected_mrn = patient_name
+        self.show_presentation_notice("")
         self.mrn_input.setText(patient_name)
 
         for row in self.session_rows:
@@ -913,6 +920,7 @@ class PatientsPage(QScrollArea):
                 owner = max(owners, key=lambda path: len(path.parts)) if owners else folder.parent
                 self._current_patient_dir = str(owner)
                 self.mrn_input.setText(owner.name)
+                self._selected_mrn = owner.name
                 self.patient_selected.emit(owner.name)
             self._active_session_dir = directory
             self.analysis_context_selected.emit(self._current_patient_dir or self.mrn_input.text().strip(), directory)
@@ -977,6 +985,13 @@ class PatientsPage(QScrollArea):
     def get_mrn(self) -> str:
         return self.mrn_input.text().strip()
 
+    def has_selected_patient(self) -> bool:
+        return bool(self.get_mrn() and self.get_mrn() == getattr(self, "_selected_mrn", ""))
+
+    def show_presentation_notice(self, message: str) -> None:
+        self._presentation_notice.setText(message)
+        self._presentation_notice.setVisible(bool(message))
+
     def get_display_mode(self) -> str:
         return "MR" if self.mr_radio.isChecked() else "Ave"
 
@@ -998,6 +1013,7 @@ class PatientsPage(QScrollArea):
             mrn = Path(session_dir).parent.name
 
         if mrn:
+            self._selected_mrn = mrn
             self.mrn_input.setText(mrn)
             idx = self.patient_combo.findText(mrn)
             if idx >= 0:

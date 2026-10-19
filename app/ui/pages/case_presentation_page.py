@@ -68,6 +68,9 @@ from app.ui.widgets.smooth_scroll import apply_smooth_scroll
 
 logger = logging.getLogger(__name__)
 
+NO_PRESENTATION_SELECTION = "No Patient Selected — Please select a patient and session in Patients & Sessions."
+NO_PROCESSED_TRIALS = "No Processed Dynamic Trials Available — Please process Dynamic trials before opening Case Presentation."
+
 # ── Clinical Trial Color Palettes ─────────────────────────────────
 # Distinct, high-contrast colors differentiating each trial trace and its toe-off line
 TRIAL_COLORS: Dict[str, str] = {
@@ -300,6 +303,8 @@ class CasePresentationPage(QWidget):
     Connects static calibration, dynamic trials, and comprehensive gait analysis.
     """
 
+    presentation_unavailable = Signal(str)
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -321,6 +326,9 @@ class CasePresentationPage(QWidget):
         self._is_dark: bool = False
         self._session_path: str = ""
         self._display_mode: str = "MR"
+        self._session_generation = 0
+        self._is_rendering = False
+        self._plot_refresh_pending = False
         self._sessions: List[SessionInfo] = []
         self._current_session_idx: int = 0
         self._mr_left_key: Optional[str] = None
@@ -334,7 +342,7 @@ class CasePresentationPage(QWidget):
         self._init_ui()
         self._update_pill_visibility()
         self._load_default_norm()
-        self._refresh_plots(show_overlay=False)
+        self._pdf_btn.setEnabled(False)
 
     def _init_ui(self) -> None:
         main_layout = QHBoxLayout(self)
@@ -892,8 +900,11 @@ class CasePresentationPage(QWidget):
         """Attempt to load default normative data file."""
         candidates = [
             Path(__file__).resolve().parent.parent.parent.parent / "MAC_CasePresentation" / "TD_Run_Ave.GCD",
+<<<<<<< HEAD
             Path.cwd() / "MAC_CasePresentation" / "TD_Ave.GCD",
             Path(__file__).resolve().parent.parent.parent / "MAC_CasePresentation" / "TD_Ave.GCD",
+=======
+>>>>>>> 8c9b324fb54884fc7eff1d7dba23fb8e924f05e4
             Path.cwd() / "MAC_CasePresentation" / "TD_Run_Ave.GCD",
             Path(__file__).resolve().parent.parent.parent / "MAC_CasePresentation" / "TD_Run_Ave.GCD",
         ]
@@ -936,30 +947,77 @@ class CasePresentationPage(QWidget):
                         return f
         return None
 
+    def _clear_trial_data(self):
+        self._session_generation += 1
+        self._plot_refresh_pending = False
+        if hasattr(self, "_plot_refresh_timer"):
+            self._plot_refresh_timer.stop()
+        self._loading_overlay.hide_loading()
+        self._trial_data.clear()
+        self._mean_cache = {}
+        self._session_path = ""
+        self._mr_left_key = self._mr_right_key = None
+        self._mr_left_name = self._mr_right_name = ""
+        self._session_date = self._study_type = self._activity_type = self._orthosis = self._assist = ""
+        self._meta_badge.clear()
+        self._meta_badge.hide()
+        self._active_trial_filter.clear()
+        for button in self._pill_buttons.values():
+            button.blockSignals(True)
+            button.setChecked(False)
+            button.blockSignals(False)
+        self._pdf_btn.setEnabled(False)
+        if any(getattr(canvas, "_last_plot_kwargs", None) is not None
+               for canvas in self._plot_grid.get_all_canvases()):
+            self._plot_grid.clear_all()
+
+    def clear_session(self):
+        self._clear_trial_data()
+        self._sessions = []
+        self._current_session_idx = 0
+        self._session_combo.blockSignals(True)
+        self._session_combo.clear()
+        self._session_combo.hide()
+        self._session_combo.blockSignals(False)
+
+    def _read_presentation_trial(self, path):
+        if path is None or not path.is_file() or path.suffix.lower() != ".gcd":
+            return None
+        if path.stem.lower().startswith(("static", "td_", "norm")):
+            return None
+        if self._norm_data and Path(self._norm_data.file_path).resolve() == path.resolve():
+            return None
+        try:
+            gcd = self._gcd_svc.read_gcd(str(path))
+            for values in gcd.variable_data:
+                if len(values) == 101:
+                    try:
+                        if np.isfinite(np.asarray(values, dtype=float)).all():
+                            return gcd
+                    except (TypeError, ValueError):
+                        continue
+        except (OSError, ValueError, IndexError) as error:
+            logger.warning("Cannot load presentation trial %s: %s", path, error)
+        return None
+
     def load_session_data(
         self,
         sessions: List[SessionInfo],
         active_session_index: int = 0,
         display_mode: str = "MR",
-    ) -> None:
+    ) -> bool:
         """
         Load configured trials and metadata from Patients & Sessions page.
         Supports multiple sessions with an in-page Session Switcher dropdown.
         """
-        if not sessions:
-            return
+        if not sessions or not 0 <= active_session_index < len(sessions):
+            self.clear_session()
+            self.presentation_unavailable.emit(NO_PRESENTATION_SELECTION)
+            return False
 
         self._sessions = sessions
         self._display_mode = display_mode
         self._current_session_idx = max(0, min(active_session_index, len(sessions) - 1))
-
-        if hasattr(self, "_loading_overlay") and self._loading_overlay:
-            self._loading_overlay.show_loading(
-                title="Processing GCD Files for Presentation",
-                message=f"Preparing Session {self._current_session_idx + 1} data...",
-                determinate=True,
-            )
-            self._loading_overlay.set_progress(5, "Reading session configuration...", "5%")
 
         # Populate session switcher dropdown
         if hasattr(self, "_session_combo"):
@@ -978,31 +1036,27 @@ class CasePresentationPage(QWidget):
                 self._session_combo.setVisible(False)
             self._session_combo.blockSignals(False)
 
-        self._load_active_session(self._current_session_idx)
+        return self._load_active_session(self._current_session_idx)
 
     def _on_session_combo_changed(self, idx: int) -> None:
         """Handle user selecting a different session from the in-page dropdown."""
         if 0 <= idx < len(self._sessions):
             self._current_session_idx = idx
-            if hasattr(self, "_loading_overlay") and self._loading_overlay:
-                self._loading_overlay.show_loading(
-                    title="Loading Session Graphs",
-                    message=f"Switching to Session {idx + 1}...",
-                    determinate=True,
-                )
-                self._loading_overlay.set_progress(5, f"Switching to Session {idx + 1}...", "5%")
             self._load_active_session(idx)
 
-    def _load_active_session(self, idx: int) -> None:
-        """Load trials and metadata for a specific session index."""
-        if not (0 <= idx < len(self._sessions)):
-            return
+    def _load_active_session(self, idx: int) -> bool:
+        """Validate selected patient trials before showing any rendering overlay."""
+        self._clear_trial_data()
+        if not (0 <= idx < len(self._sessions)) or not self._sessions[idx].directory:
+            self.presentation_unavailable.emit(NO_PRESENTATION_SELECTION)
+            return False
 
         sess = self._sessions[idx]
-        self._session_path = sess.directory
-        session_dir = Path(sess.directory) if sess.directory else Path(".")
-
-        self._trial_data.clear()
+        session_dir = Path(sess.directory)
+        if not session_dir.is_dir():
+            self.presentation_unavailable.emit(NO_PROCESSED_TRIALS)
+            return False
+        self._session_path = str(session_dir)
 
         # Collect session metadata for presentation
         self._session_date = sess.analysis_date
@@ -1013,73 +1067,22 @@ class CasePresentationPage(QWidget):
         self._mr_left_name = sess.mr_left
         self._mr_right_name = sess.mr_right
 
-        active_left = [t for t in sess.left_trials if t.gcd_filename and t.gcd_filename != "--"]
-        active_right = [t for t in sess.right_trials if t.gcd_filename and t.gcd_filename != "--"]
-        total_trials = len(active_left) + len(active_right)
-        read_idx = 0
-
-        # Load selected Left trials (L1 - L10)
-        for i, trial_info in enumerate(sess.left_trials, start=1):
-            fname = trial_info.gcd_filename
-            if not fname or fname == "--":
-                continue
-            read_idx += 1
-            if hasattr(self, "_loading_overlay") and self._loading_overlay and total_trials > 0:
-                pct = 5 + int((read_idx / (total_trials + 1)) * 30)
-                self._loading_overlay.set_progress(
-                    pct,
-                    f"Reading Left trial {read_idx}/{total_trials}: {fname}",
-                    f"Loading GCD trials ({pct}%)",
-                )
-            gcd_path = self._find_gcd_file(session_dir, fname)
-            if gcd_path and gcd_path.is_file():
-                try:
-                    self._trial_data[f"L{i}"] = self._gcd_svc.read_gcd(str(gcd_path))
-                    logger.info("Loaded Left trial L%d: %s", i, gcd_path.name)
-                except Exception as e:
-                    logger.warning("Error reading GCD %s: %s", gcd_path, e)
-
-        # Load selected Right trials (R1 - R10)
-        for i, trial_info in enumerate(sess.right_trials, start=1):
-            fname = trial_info.gcd_filename
-            if not fname or fname == "--":
-                continue
-            read_idx += 1
-            if hasattr(self, "_loading_overlay") and self._loading_overlay and total_trials > 0:
-                pct = 5 + int((read_idx / (total_trials + 1)) * 30)
-                self._loading_overlay.set_progress(
-                    pct,
-                    f"Reading Right trial {read_idx}/{total_trials}: {fname}",
-                    f"Loading GCD trials ({pct}%)",
-                )
-            gcd_path = self._find_gcd_file(session_dir, fname)
-            if gcd_path and gcd_path.is_file():
-                try:
-                    self._trial_data[f"R{i}"] = self._gcd_svc.read_gcd(str(gcd_path))
-                    logger.info("Loaded Right trial R%d: %s", i, gcd_path.name)
-                except Exception as e:
-                    logger.warning("Error reading GCD %s: %s", gcd_path, e)
-
-        # Ensure all available GCD files in the session are discovered and populated
-        from app.services.session_organizer import find_all_gcd_files
-        all_session_gcds = find_all_gcd_files(session_dir)
-        for idx, gcd_f in enumerate(all_session_gcds):
-            if idx >= 10:
-                break
-            l_k = f"L{idx + 1}"
-            r_k = f"R{idx + 1}"
-            if l_k not in self._trial_data:
-                try:
-                    self._trial_data[l_k] = self._gcd_svc.read_gcd(str(gcd_f))
-                    logger.info("Auto-discovered Left trial %s: %s", l_k, gcd_f.name)
-                except Exception as e:
-                    logger.warning("Error reading GCD %s: %s", gcd_f, e)
-            if r_k not in self._trial_data:
-                try:
-                    self._trial_data[r_k] = self._gcd_svc.read_gcd(str(gcd_f))
-                    logger.info("Auto-discovered Right trial %s: %s", r_k, gcd_f.name)
-                except Exception as e:
-                    logger.warning("Error reading GCD %s: %s", gcd_f, e)
+        loaded = {}
+        for side, trials in (("L", sess.left_trials), ("R", sess.right_trials)):
+            for number, trial in enumerate(trials[:10], start=1):
+                if not trial.gcd_filename or trial.gcd_filename == "--":
+                    continue
+                path = self._find_gcd_file(session_dir, trial.gcd_filename)
+                if path not in loaded:
+                    loaded[path] = self._read_presentation_trial(path)
+                gcd = loaded[path]
+                if gcd is not None:
+                    self._trial_data[f"{side}{number}"] = gcd
+        if not self._trial_data:
+            self._clear_trial_data()
+            self.presentation_unavailable.emit(NO_PROCESSED_TRIALS)
+            return False
+        self._pdf_btn.setEnabled(True)
 
         # Find which trial key corresponds to MR Left and MR Right
         self._mr_left_key = None
@@ -1139,18 +1142,19 @@ class CasePresentationPage(QWidget):
         if hasattr(self, "_smooth_scroll") and self._smooth_scroll:
             self._smooth_scroll.reset(0)
         self._update_pill_visibility()
-        self._refresh_plots(show_overlay=True)
+        self._queue_session_render()
+        return True
+
+    def _queue_session_render(self):
+        if hasattr(self, "_plot_refresh_timer"):
+            self._plot_refresh_timer.stop()
+        generation = self._session_generation
+        QTimer.singleShot(0, self, lambda: self._refresh_plots(show_overlay=True)
+                          if generation == self._session_generation and self._trial_data else None)
 
     def load_folder(self, folder_path: str) -> None:
         """Load all GCD files in the session directory."""
-        if hasattr(self, "_loading_overlay") and self._loading_overlay:
-            self._loading_overlay.show_loading(
-                title="Processing GCD Files for Presentation",
-                message=f"Scanning folder for GCD trials: {Path(folder_path).name}...",
-                determinate=True,
-            )
-            self._loading_overlay.set_progress(10, "Reading GCD directory...", "10%")
-
+        self.clear_session()
         self._session_path = folder_path
         session_dir = Path(folder_path)
         if session_dir.is_file():
@@ -1162,15 +1166,10 @@ class CasePresentationPage(QWidget):
         logger.info("Scanning for GCD files in %s: found %d", session_dir, len(gcd_files))
 
         for i, gcd_path in enumerate(gcd_files):
-            pct = 10 + int(((i + 1) / max(1, len(gcd_files))) * 25)
-            if hasattr(self, "_loading_overlay") and self._loading_overlay:
-                self._loading_overlay.set_progress(
-                    pct,
-                    f"Reading trial {i + 1}/{len(gcd_files)}: {gcd_path.name}",
-                    f"Loading files ({pct}%)",
-                )
             try:
-                gcd = self._gcd_svc.read_gcd(str(gcd_path))
+                gcd = self._read_presentation_trial(gcd_path)
+                if gcd is None:
+                    continue
                 stem = gcd_path.stem.lower()
                 matched = False
                 for t_num in range(1, 11):
@@ -1185,9 +1184,15 @@ class CasePresentationPage(QWidget):
             except Exception as e:
                 logger.warning("Error reading GCD file %s: %s", gcd_path, e)
 
+        if not self._trial_data:
+            self._clear_trial_data()
+            self.presentation_unavailable.emit(NO_PROCESSED_TRIALS)
+            return
+        self._pdf_btn.setEnabled(True)
+        self._active_trial_filter = set(self._trial_data)
         if hasattr(self, "_smooth_scroll") and self._smooth_scroll:
             self._smooth_scroll.reset(0)
-        self._refresh_plots(show_overlay=True)
+        self._queue_session_render()
 
     def _on_open_folder_clicked(self) -> None:
         folder = QFileDialog.getExistingDirectory(
@@ -1203,19 +1208,6 @@ class CasePresentationPage(QWidget):
         # Ensure trials are loaded
         if not self._trial_data and self._session_path:
             self.load_folder(self._session_path)
-
-        if not self._trial_data:
-            # Fallback to demo workspace session if present
-            demo_session_dir = (
-                Path(__file__).resolve().parent.parent.parent.parent
-                / "Shriners_Gait_Model_PAF_v1.0"
-                / "Shriners_Gait_Model_PAF_v1.0"
-                / "Data"
-                / "Shriners_test_002"
-                / "2025-02-21_0003"
-            )
-            if demo_session_dir.is_dir():
-                self.load_folder(str(demo_session_dir))
 
         if not self._trial_data:
             QMessageBox.warning(
@@ -1424,6 +1416,9 @@ class CasePresentationPage(QWidget):
         return cached[1]
 
     def _schedule_plot_refresh(self):
+        if self._is_rendering:
+            self._plot_refresh_pending = True
+            return
         if not hasattr(self, "_plot_refresh_timer"):
             self._plot_refresh_timer = QTimer(self)
             self._plot_refresh_timer.setSingleShot(True)
@@ -1582,8 +1577,33 @@ class CasePresentationPage(QWidget):
         return getter() if getter else PageSettings()
 
     def _refresh_plots(self, show_overlay: bool = True) -> None:
+        if self._is_rendering:
+            self._plot_refresh_pending = True
+            return
+        generation = self._session_generation
+        self._is_rendering = True
+        try:
+            self._render_plots(show_overlay)
+        except Exception as error:
+            logger.exception("Clinical graph rendering failed")
+            if generation == self._session_generation:
+                self._meta_badge.setText(f"Unable to render clinical graphs: {error}")
+                self._meta_badge.show()
+        finally:
+            self._is_rendering = False
+            self._loading_overlay.hide_loading()
+            if self._plot_refresh_pending:
+                self._plot_refresh_pending = False
+                if self._trial_data:
+                    self._schedule_plot_refresh()
+
+    def _render_plots(self, show_overlay: bool) -> None:
         if hasattr(self, "_plot_refresh_timer"):
             self._plot_refresh_timer.stop()
+        if not self._trial_data:
+            self._loading_overlay.hide_loading()
+            return
+        generation = self._session_generation
         cat = self._current_category
         side = self._current_side
         palette = DARK_PALETTE if self._is_dark else LIGHT_PALETTE
@@ -1598,7 +1618,11 @@ class CasePresentationPage(QWidget):
                     message=f"Computing gait curves for {cat_title} ({side_title})...",
                     determinate=True,
                 )
+                if generation != self._session_generation:
+                    return
                 self._loading_overlay.set_progress(35, f"Analyzing trials for {cat_title}...", f"Starting {cat_title}")
+                if generation != self._session_generation:
+                    return
 
         self._title_label.setText("CASE PRESENTATION")
         if hasattr(self, "_category_badge"):
@@ -1667,6 +1691,8 @@ class CasePresentationPage(QWidget):
                 canvas.draw_idle()
 
         for plot_idx in range(num_plots):
+            if generation != self._session_generation:
+                return
             l_var = left_vars[plot_idx] if plot_idx < len(left_vars) else ""
             r_var = right_vars[plot_idx] if plot_idx < len(right_vars) else ""
             if not l_var and not r_var:
@@ -1680,6 +1706,8 @@ class CasePresentationPage(QWidget):
                     f"Rendering graph {plot_idx + 1}/{num_plots}: {title}",
                     f"{cat_title} ({plot_idx + 1}/{num_plots})",
                 )
+                if generation != self._session_generation:
+                    return
 
             y_data = []
             curve_ids = []
@@ -1821,7 +1849,11 @@ class CasePresentationPage(QWidget):
                 l_name = settings.left_names[plot_idx] if plot_idx < len(settings.left_names) else ""
                 r_name = settings.right_names[plot_idx] if plot_idx < len(settings.right_names) else ""
                 norm_key = (
+<<<<<<< HEAD
                     
+=======
+                   
+>>>>>>> 8c9b324fb54884fc7eff1d7dba23fb8e924f05e4
                     GCDService.find_norm_variable(self._norm_data, l_name)
                     or GCDService.find_norm_variable(self._norm_data, r_name)
                 )
@@ -1854,6 +1886,8 @@ class CasePresentationPage(QWidget):
 
             row = plot_idx // 3
             col = plot_idx % 3
+            if generation != self._session_generation:
+                return
             self._plot_grid.plot_at(
                 row, col,
                 graph_id=(os.path.normcase(os.path.abspath(self._session_path)), cat, side, l_var or r_var or str(plot_idx)),
@@ -1881,4 +1915,3 @@ class CasePresentationPage(QWidget):
 
         if show_overlay and hasattr(self, "_loading_overlay") and self._loading_overlay and self._loading_overlay.isVisible():
             self._loading_overlay.set_progress(100, "Clinical graphs ready!", "Complete")
-            QTimer.singleShot(150, self._loading_overlay.hide_loading)

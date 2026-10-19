@@ -90,10 +90,10 @@ class TestLoadingOverlay(unittest.TestCase):
         # Load session data
         page.load_session_data([sess], active_session_index=0, display_mode="MR")
 
-        # Verify progress was reported
-        self.assertGreater(len(progress_calls), 0, "Progress should be reported during load_session_data")
-        final_val = progress_calls[-1][0]
-        self.assertEqual(final_val, 100, "Progress should reach 100% on completion")
+        # An unselected directory must never start rendering or show loading progress.
+        self.assertEqual(progress_calls, [])
+        self.assertFalse(page._loading_overlay.isVisible())
+        self.assertFalse(page._trial_data)
 
         page.close()
 
