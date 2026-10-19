@@ -657,11 +657,11 @@ class StaticAnalysisPage(QScrollArea):
 
         # Foot model measurements
         foot_fields = [
-            ("Hindfoot Varus/Valgus (deg)", "hindfoot_varus"),
-            ("Calcaneal Pitch (deg)", "calcaneal_pitch"),
+            ("Hindfoot Varus/Valgus (deg)", "hindfoot_varus")]
+        """("Calcaneal Pitch (deg)", "calcaneal_pitch"),
             ("Hindfoot Progression (deg)", "hindfoot_progression"),
-            ("1st Metatarsal Pitch (deg)", "first_metatarsal_pitch"),
-        ]
+            ("1st Metatarsal Pitch (deg)", "first_metatarsal_pitch"),"""
+        
         self._foot_inputs = {}
         for i, (label_text, key) in enumerate(foot_fields):
             row = 1 + i
@@ -780,6 +780,7 @@ class StaticAnalysisPage(QScrollArea):
 
         cond_card.add_layout(c_grid)
         layout.addWidget(cond_card)
+        cond_card.hide()
 
         # ── 6. Model Configuration (collapsible) ───────────────────────
         self._model_toggle = QPushButton("▸ Model Configuration (Hip Joint, Coordinate System, Marker Set)")

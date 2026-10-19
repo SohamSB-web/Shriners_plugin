@@ -9,7 +9,7 @@ including:
   Page 2: Sagittal Kinetics & Joint Power
   Page 3: Coronal Kinetics
   Page 4: Foot Kinematics & Muscle Analysis
-  Page 5: Temporal-Spatial Parameters & Clinical Summary Table
+  Following pages: Per-limb Temporal-Spatial Parameters & Clinical Summary Tables
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 import subprocess
+import textwrap
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -28,6 +29,8 @@ matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.font_manager import FontProperties
 
 from app.models.data_models import GCDData, PageSettings
 from app.services.gcd_service import GCDService
@@ -205,7 +208,7 @@ class CasePresentationPdfService:
                 p_info=p_info,
             )
 
-            # Page 5: Temporal-Spatial Summary & Clinical Overview Table
+            # Temporal-spatial summaries paginate independently for each selected limb.
             cls._create_temporal_spatial_page(
                 pdf=pdf,
                 trials=trials,
@@ -536,71 +539,13 @@ class CasePresentationPdfService:
         trials: Dict[str, GCDData],
         p_info: Dict[str, str],
     ) -> None:
-        """Create temporal-spatial parameters summary table page."""
-        fig = Figure(figsize=(11, 8.5), dpi=150)
-        fig.patch.set_facecolor("white")
-
-        # Collect metrics from active trials
-        active_l = [f"L{i}" for i in range(1, 11) if f"L{i}" in trials]
-        active_r = [f"R{i}" for i in range(1, 11) if f"R{i}" in trials]
-
+        """Paginate each limb using measured text widths, without shrinking text."""
+        active_l = [f"L{i}" for i in range(1, 11)
+                    if trials.get(f"L{i}") is not None and trials[f"L{i}"].variable_names]
+        active_r = [f"R{i}" for i in range(1, 11)
+                    if trials.get(f"R{i}") is not None and trials[f"R{i}"].variable_names]
         if not active_l and not active_r:
-            active_l = ["L1"]
-
-        # Top Clinical Header: 4 non-overlapping vertical tiers
-        fig.text(
-            0.05, 0.965,
-            p_info["hospital"].upper(),
-            fontsize=10.0,
-            fontweight="bold",
-            color="#0A0A0A",
-            family="sans-serif",
-        )
-        fig.text(
-            0.95, 0.965,
-            "CONFIDENTIAL MEDICAL RECORD",
-            fontsize=7.5,
-            fontweight="bold",
-            color="#71717A",
-            ha="right",
-            family="sans-serif",
-        )
-        fig.text(
-            0.05, 0.943,
-            "STRIDE & TEMPORAL-SPATIAL SUMMARY",
-            fontsize=11.5,
-            fontweight="bold",
-            color="#0A0A0A",
-            family="sans-serif",
-        )
-        fig.text(
-            0.05, 0.923,
-            f"Patient MRN: {p_info['mrn']}    |    Session Date: {p_info['session_date']}    |    Condition: {p_info['condition']}    |    Exported: {p_info.get('export_time', '')}",
-            fontsize=8.0,
-            color="#52525B",
-            family="sans-serif",
-        )
-
-        legend_parts = []
-        if active_l:
-            legend_parts.append(f"Left ({', '.join(active_l)})")
-        if active_r:
-            legend_parts.append(f"Right ({', '.join(active_r)})")
-        legend_txt = "TRIALS EXPORTED:   " + "     |     ".join(legend_parts) if legend_parts else ""
-        if legend_txt:
-            fig.text(
-                0.05, 0.903,
-                legend_txt,
-                fontsize=8.0,
-                fontweight="semibold",
-                color="#18181B",
-                family="sans-serif",
-            )
-
-        # Divider line
-        fig.add_artist(
-            plt.Line2D((0.05, 0.95), (0.892, 0.892), color="#E4E4E7", linewidth=0.75)
-        )
+            return
 
         # Table metric definitions: (Display Name, Unit, Left Variable, Right Variable)
         metrics = [
@@ -670,94 +615,129 @@ class CasePresentationPdfService:
 
             table_data.append(row)
 
-        # Draw Table
-        ax = fig.add_axes([0.05, 0.40, 0.90, 0.48])
-        ax.axis("off")
+        # Measure at the final font size; widths are only expanded, never compressed.
+        measurement = Figure(figsize=(11, 8.5), dpi=150)
+        renderer = FigureCanvasAgg(measurement).get_renderer()
+        font = FontProperties(family="sans-serif", size=9)
+        header_font = FontProperties(family="sans-serif", size=9, weight="bold")
+        available_width = measurement.bbox.width * 0.90
+        widths = []
+        for column, header in enumerate(col_headers):
+            text_width = max(
+                [renderer.get_text_width_height_descent(header, header_font, False)[0]]
+                + [renderer.get_text_width_height_descent(row[column], header_font if column == 0 else font, False)[0]
+                   for row in table_data])
+            widths.append((text_width + 4) / (1 - 2 * 0.08))
 
-        # Custom column widths proportional to content
-        total_cols = len(col_headers)
-        n_trial_cols = len(active_l) + len(active_r)
-        n_mean_cols = (1 if active_l else 0) + (1 if active_r else 0)
-        param_w = 0.22
-        unit_w = 0.08
-        norm_w = 0.10
-        mean_w = 0.08 * n_mean_cols
-        rem_w = max(0.1, 1.0 - (param_w + unit_w + norm_w + mean_w))
-        trial_col_w = max(0.045, rem_w / max(1, n_trial_cols))
+        for limb, keys in (("Left", active_l), ("Right", active_r)):
+            if not keys:
+                continue
+            fixed = [0, 1, col_headers.index(f"{keys[0][0]} Mean"), len(col_headers) - 1]
+            fixed_width = sum(widths[index] for index in fixed)
+            pages = []
+            columns = []
+            used = fixed_width
+            for key in keys:
+                index = col_headers.index(key)
+                if fixed_width + widths[index] > available_width:
+                    raise ValueError(f"Temporal-spatial value in {key} is too wide for a readable PDF page")
+                if columns and used + widths[index] > available_width:
+                    pages.append(columns)
+                    columns, used = [], fixed_width
+                columns.append(index)
+                used += widths[index]
+            pages.append(columns)
+            for page_number, trial_columns in enumerate(pages, start=1):
+                indices = fixed[:2] + trial_columns + fixed[2:]
+                page_widths = [widths[index] for index in indices]
+                cls._draw_temporal_spatial_page(
+                    pdf, p_info, limb, [col_headers[index] for index in trial_columns],
+                    [col_headers[index] for index in indices],
+                    [[row[index] for index in indices] for row in table_data],
+                    [width / sum(page_widths) for width in page_widths],
+                    len(keys), page_number, len(pages))
 
-        col_widths = [param_w, unit_w] + [trial_col_w] * n_trial_cols + [0.08] * n_mean_cols + [norm_w]
-        w_sum = sum(col_widths)
-        col_widths = [w / w_sum for w in col_widths]
+    @classmethod
+    def _draw_temporal_spatial_page(
+        cls, pdf, p_info, limb, keys, col_headers, table_data, col_widths,
+        limb_trial_count, page_number, page_count,
+    ):
+        fig = Figure(figsize=(11, 8.5), dpi=150)
+        canvas = FigureCanvasAgg(fig)
+        fig.patch.set_facecolor("white")
+        try:
+            fig.text(0.05, 0.965, p_info["hospital"].upper(), fontsize=10,
+                     fontweight="bold", color="#0A0A0A", family="sans-serif")
+            fig.text(0.95, 0.965, "CONFIDENTIAL MEDICAL RECORD", fontsize=7.5,
+                     fontweight="bold", color="#71717A", ha="right", family="sans-serif")
+            fig.text(0.05, 0.943, f"STRIDE & TEMPORAL-SPATIAL SUMMARY - {limb.upper()} LIMB",
+                     fontsize=11.5, fontweight="bold", color="#0A0A0A", family="sans-serif")
+            fig.text(0.05, 0.923,
+                     f"Patient MRN: {p_info['mrn']}    |    Session Date: {p_info['session_date']}    |    Condition: {p_info['condition']}    |    Exported: {p_info.get('export_time', '')}",
+                     fontsize=8, color="#52525B", family="sans-serif")
+            continuation = f"    |    Limb page {page_number}/{page_count}" if page_count > 1 else ""
+            fig.text(0.05, 0.903, f"TRIALS EXPORTED: {limb} ({', '.join(keys)}){continuation}",
+                     fontsize=8, fontweight="semibold", color="#18181B", family="sans-serif")
+            fig.add_artist(plt.Line2D((0.05, 0.95), (0.892, 0.892), color="#E4E4E7", linewidth=0.75))
 
-        table = ax.table(
-            cellText=table_data,
-            colLabels=col_headers,
-            colWidths=col_widths,
-            loc="center",
-            cellLoc="center",
-        )
+            ax = fig.add_axes([0.05, 0.43, 0.90, 0.43])
+            ax.axis("off")
+            table = ax.table(cellText=table_data, colLabels=col_headers, colWidths=col_widths,
+                             bbox=[0, 0, 1, 1], cellLoc="center")
+            table.auto_set_font_size(False)
+            table.set_fontsize(9)
+            for (row, column), cell in table.get_celld().items():
+                cell.PAD = 0.08
+                cell.set_edgecolor("#D4D4D8")
+                cell.set_linewidth(0.6)
+                cell.get_text().set_fontfamily("sans-serif")
+                if row == 0:
+                    cell.set_facecolor("#18181B")
+                    cell.get_text().set_color("white")
+                    cell.get_text().set_weight("bold")
+                elif column == 0:
+                    cell.set_facecolor("#F4F4F5")
+                    cell.get_text().set_weight("bold")
+                else:
+                    cell.set_facecolor("white" if row % 2 else "#FAFAFA")
+                if column == 0:
+                    cell.get_text().set_ha("left")
 
-        table.auto_set_font_size(False)
-        table.set_fontsize(8.0)
-        table.scale(1.0, 1.45)
+            fig.text(0.05, 0.385,
+                     f"{keys[0][0]} Mean includes all {limb_trial_count} selected {limb.lower()} trial(s).  -- = scalar value unavailable.",
+                     fontsize=8.5, color="#52525B", family="sans-serif")
+            ax_box = fig.add_axes([0.05, 0.08, 0.90, 0.26])
+            ax_box.axis("off")
+            ax_box.add_patch(plt.Rectangle((0, 0), 1, 1, fill=False, edgecolor="#A1A1AA",
+                                           lw=0.7, transform=ax_box.transAxes))
+            ax_box.text(0.02, 0.86, "CLINICAL INTERPRETATION & BIOMECHANICAL OBSERVATIONS:",
+                        fontsize=8.5, fontweight="bold", color="#0A0A0A", transform=ax_box.transAxes)
+            bullets = [
+                "• Kinematic & kinetic waveforms conform to Shriners 3D Gait Model (Plug-in Gait PAF v1.0).",
+                "• Temporal-spatial parameters calculated across accepted dynamic walking trials.",
+                "• Shaded normative band indicates age-matched typically developing (TD) control corridor (± 1 SD).",
+            ]
+            for index, bullet in enumerate(bullets):
+                ax_box.text(0.02, 0.66 - index * 0.22,
+                            textwrap.fill(bullet, width=66, subsequent_indent="  "),
+                            fontsize=8, linespacing=1.35, color="#27272A", transform=ax_box.transAxes)
+            for y, label in ((0.55, "Motion Analysis Physical Therapist / Biomechanist"),
+                             (0.22, "Reviewing Medical Director / Orthopaedic Surgeon")):
+                ax_box.plot([0.64, 0.97], [y, y], color="#52525B", lw=0.8, transform=ax_box.transAxes)
+                ax_box.text(0.64, y - 0.12, label, fontsize=7.5, color="#52525B", transform=ax_box.transAxes)
 
-        # Style Header Row and alternating cells
-        for (r, c), cell in table.get_celld().items():
-            cell.set_edgecolor("#D4D4D8")
-            cell.set_linewidth(0.6)
-            if r == 0:
-                cell.set_facecolor("#18181B")
-                cell.get_text().set_color("#FFFFFF")
-                cell.get_text().set_weight("bold")
-                cell.get_text().set_fontsize(8.2)
-            elif c == 0:
-                cell.set_facecolor("#F4F4F5")
-                cell.get_text().set_weight("bold")
-                cell.get_text().set_ha("left")
-            elif r % 2 == 1:
-                cell.set_facecolor("#FFFFFF")
-            else:
-                cell.set_facecolor("#FAFAFA")
-
-        # Clinical Sign-off & Interpretation Box
-        ax_box = fig.add_axes([0.05, 0.08, 0.90, 0.26])
-        ax_box.axis("off")
-
-        # Border for Clinical Notes
-        rect = plt.Rectangle((0, 0), 1, 1, fill=False, edgecolor="#A1A1AA", lw=0.7, transform=ax_box.transAxes)
-        ax_box.add_patch(rect)
-
-        ax_box.text(
-            0.02, 0.86,
-            "CLINICAL INTERPRETATION & BIOMECHANICAL OBSERVATIONS:",
-            fontsize=8.5,
-            fontweight="bold",
-            color="#0A0A0A",
-            transform=ax_box.transAxes,
-        )
-        bullets = [
-            "• Kinematic & kinetic waveforms conform to Shriners 3D Gait Model (Plug-in Gait PAF v1.0).",
-            "• Temporal-spatial parameters calculated across accepted dynamic walking trials.",
-            "• Shaded normative band indicates age-matched typically developing (TD) control corridor (± 1 SD).",
-        ]
-        for bi, bullet in enumerate(bullets):
-            ax_box.text(
-                0.02, 0.66 - bi * 0.22,
-                bullet,
-                fontsize=7.8,
-                color="#27272A",
-                transform=ax_box.transAxes,
-            )
-
-        # Signature lines comfortably inside right side without overlap
-        ax_box.plot([0.62, 0.96], [0.55, 0.55], color="#52525B", lw=0.8, transform=ax_box.transAxes)
-        ax_box.text(0.62, 0.43, "Motion Analysis Physical Therapist / Biomechanist", fontsize=7.5, color="#52525B", transform=ax_box.transAxes)
-
-        ax_box.plot([0.62, 0.96], [0.22, 0.22], color="#52525B", lw=0.8, transform=ax_box.transAxes)
-        ax_box.text(0.62, 0.10, "Reviewing Medical Director / Orthopaedic Surgeon", fontsize=7.5, color="#52525B", transform=ax_box.transAxes)
-
-        pdf.savefig(fig)
-        plt.close(fig)
+            canvas.draw()
+            renderer = canvas.get_renderer()
+            for (row, column), cell in table.get_celld().items():
+                text_box = cell.get_text().get_window_extent(renderer)
+                cell_box = cell.get_window_extent(renderer)
+                pad_x, pad_y = cell_box.width * cell.PAD, cell_box.height * cell.PAD
+                if (text_box.x0 < cell_box.x0 + pad_x - 1 or text_box.x1 > cell_box.x1 - pad_x + 1
+                        or text_box.y0 < cell_box.y0 + pad_y - 1 or text_box.y1 > cell_box.y1 - pad_y + 1):
+                    raise ValueError(f"Temporal-spatial text does not fit cell ({row}, {column})")
+            pdf.savefig(fig)
+        finally:
+            plt.close(fig)
 
     @classmethod
     def _get_scalar(cls, gcd: Optional[GCDData], var_name: str) -> Optional[float]:

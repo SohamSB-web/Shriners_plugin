@@ -12,6 +12,7 @@ Verifies:
 import os
 import sys
 import unittest
+import tempfile
 from pathlib import Path
 import zlib
 import re
@@ -27,28 +28,17 @@ from app.services.gcd_service import GCDService
 
 class TestPdfExportTrialFiltering(unittest.TestCase):
     def setUp(self):
-        self.output_pdf = Path("test_filtered_output.pdf")
-        if self.output_pdf.exists():
-            self.output_pdf.unlink()
-
-        # Build mock trials L1..L4, R1..R4
+        self._temporary = tempfile.TemporaryDirectory()
+        self.output_pdf = Path(self._temporary.name) / "filtered_output.pdf"
         self.mock_trials = {}
-        gcd_dir = Path("Shriners_Gait_Model_PAF_v1.0/Shriners_Gait_Model_PAF_v1.0/Data/Claudia_123-20260928T142041Z-1-001/Claudia_123/2026-10-18_2")
-        if gcd_dir.exists():
-            gcd_files = sorted(list(gcd_dir.glob("*.gcd")))
-            for i in range(1, 5):
-                src = gcd_files[(i - 1) % len(gcd_files)]
-                self.mock_trials[f"L{i}"] = GCDService.read_gcd(str(src))
-                self.mock_trials[f"R{i}"] = GCDService.read_gcd(str(src))
-        else:
-            # Fallback to minimal GCDData
-            for i in range(1, 5):
-                self.mock_trials[f"L{i}"] = GCDData(file_path=f"L{i}.gcd")
-                self.mock_trials[f"R{i}"] = GCDData(file_path=f"R{i}.gcd")
+        for i in range(1, 5):
+            for side in ("L", "R"):
+                self.mock_trials[f"{side}{i}"] = GCDData(
+                    variable_names=["LeftTrunkTilt", "RightTrunkTilt", "LeftFootOff", "RightFootOff"],
+                    variable_data=[[float(i)] * 101, [float(i)] * 101, [60.0], [60.0]])
 
     def tearDown(self):
-        if self.output_pdf.exists():
-            self.output_pdf.unlink()
+        self._temporary.cleanup()
 
     def test_trial_color_assignment(self):
         """Clinical colors: Left is royal blue, Right is crimson red for primary trials."""
@@ -142,7 +132,7 @@ class TestPdfExportTrialFiltering(unittest.TestCase):
 
         settings = SettingsService().get_kinematics_settings()
         fig = plt.Figure(figsize=(11, 8.5))
-        pdf_path = "test_lines_debug.pdf"
+        pdf_path = str(Path(self._temporary.name) / "lines_debug.pdf")
         with PdfPages(pdf_path) as pdf:
             CasePresentationPdfService._create_plot_page(
                 pdf=pdf,
