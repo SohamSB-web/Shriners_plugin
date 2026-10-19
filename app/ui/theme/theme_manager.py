@@ -529,8 +529,9 @@ QLabel#badge, QLabel#metaBadge {{
     background-color: {palette.primary_light};
     color: {palette.primary};
     border: 1px solid {palette.accent};
-    border-radius: 10px;
-    padding: 2px 10px;
+    border-radius: 12px;
+    padding: 4px 12px;
+    min-height: 20px;
     font-size: {FONT_SIZE_CAPTION}px;
     font-weight: 600;
 }}

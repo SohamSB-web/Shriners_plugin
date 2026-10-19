@@ -115,11 +115,20 @@ class EventDetailsDialog(QDialog):
         if session_dir is not None:
             self.session_dir = Path(session_dir)
         elif self.events_info.get("filepath"):
-            self.session_dir = Path(self.events_info["filepath"]).parent
+            fp = Path(self.events_info["filepath"]).resolve()
+            self.session_dir = fp.parent.parent if fp.parent.name.lower() == "events" else fp.parent
+        elif parent and hasattr(parent, "_get_session_dir"):
+            self.session_dir = parent._get_session_dir()
         elif parent and hasattr(parent, "_session_path") and parent._session_path:
-            self.session_dir = Path(parent._session_path).parent
+            p = Path(parent._session_path).resolve()
+            self.session_dir = p if p.is_dir() else p.parent
         else:
             self.session_dir = Path(".")
+
+        if self.session_dir.name.lower() == "events":
+            self.session_dir = self.session_dir.parent
+        if self.session_dir.is_file():
+            self.session_dir = self.session_dir.parent
 
         # Resolve exact trial frame rate from corresponding C3D if available
         if self.session_dir and self.trial_filename:
@@ -624,12 +633,15 @@ class EventDetailsDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(SPACE_MD)
 
-        relabel_btn = QPushButton("  Re-run Auto-Labeling for this Trial")
+        relabel_btn = QPushButton("  Re-run Auto-Labeling")
+        relabel_btn.setToolTip("Re-run automated gait event labeling for this trial")
         ev_icon = Path(__file__).resolve().parent.parent.parent.parent / "resources" / "icons" / "auto_event.svg"
         if ev_icon.is_file():
             relabel_btn.setIcon(QIcon(str(ev_icon)))
         relabel_btn.setCursor(Qt.PointingHandCursor)
         relabel_btn.setFont(QFont(FONT_FAMILY, FONT_SIZE_SMALL, QFont.Bold))
+        relabel_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        relabel_btn.setMinimumWidth(relabel_btn.sizeHint().width())
         if self._is_dark:
             relabel_btn.setStyleSheet(
                 "QPushButton { background: #1E293B; color: #F8FAFC; border: 1px solid #475569; "
@@ -644,6 +656,7 @@ class EventDetailsDialog(QDialog):
             )
         relabel_btn.clicked.connect(self._on_rerun_clicked)
         btn_row.addWidget(relabel_btn)
+
 
         btn_row.addStretch()
 
@@ -1039,7 +1052,9 @@ class EventDetailsDialog(QDialog):
             s_fg = "#FDE68A" if self._is_dark else "#92400E"
             s_bdr = "#78350F" if self._is_dark else "#FCD34D"
         else:
-            self._sync_badge.setText("● " + self.events_info.get("meta", {}).get("event_sync_status", "Events Saved"))
+            raw_st = self.events_info.get("meta", {}).get("event_sync_status", "Events Saved")
+            display_st = "Events Saved" if "Pending" in raw_st else raw_st
+            self._sync_badge.setText("● " + display_st)
             s_bg = "#134E4A" if self._is_dark else "#F0FDF4"
             s_fg = "#2DD4BF" if self._is_dark else "#166534"
             s_bdr = "#14B8A6" if self._is_dark else "#BBF7D0"
@@ -1276,12 +1291,12 @@ class EventDetailsDialog(QDialog):
         # 4. Show feedback
         if qtm_success:
             self._show_toast(
-                f"{len(self._events)} events committed — {qtm_msg}",
+                f"✓ {len(self._events)} events saved and updated in QTM.",
                 "success",
             )
         else:
             self._show_toast(
-                f"✓ Saved {len(self._events)} events to session file. Note: {qtm_msg}",
+                f"Saved locally, but QTM not updated: {qtm_msg}",
                 "warning",
             )
         return True

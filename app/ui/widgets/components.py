@@ -61,9 +61,16 @@ _cand1 = Path(__file__).resolve().parent.parent.parent.parent / "resources" / "i
 _cand2 = Path(__file__).resolve().parent.parent.parent / "resources" / "icons"
 ICONS_DIR = _cand1 if _cand1.is_dir() else _cand2
 
+# ── Icon cache ──────────────────────────────────────────────────────────────
+# SVG read + regex recolor + QPainter render is expensive. Cache keyed by
+# (resolved_path, color, size) so every hover/poll reuse the same QIcon.
+_icon_cache: dict = {}
+
 
 def create_tinted_icon(svg_name_or_path: str | Path, stroke_color: str = "#404040", size: int = 16) -> QIcon:
-    """Load an SVG icon from resources/icons, recolor stroke/fill cleanly, and return QIcon."""
+    """Load an SVG icon from resources/icons, recolor stroke/fill cleanly, and return QIcon.
+    Results are cached in-process so repeated calls for the same (path, color, size) are free.
+    """
     try:
         p = Path(svg_name_or_path)
         if not p.is_file():
@@ -71,19 +78,28 @@ def create_tinted_icon(svg_name_or_path: str | Path, stroke_color: str = "#40404
             if not p.is_file():
                 return QIcon()
 
+        cache_key = (str(p), stroke_color, size)
+        cached = _icon_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         raw = p.read_text(encoding="utf-8")
         recolored = re.sub(r'stroke="[^"]*"', f'stroke="{stroke_color}"', raw)
         recolored = re.sub(r'fill="(?!none)[^"]*"', f'fill="{stroke_color}"', recolored)
         renderer = QSvgRenderer(QByteArray(recolored.encode("utf-8")))
         if not renderer.isValid():
-            return QIcon(str(p))
+            icon = QIcon(str(p))
+            _icon_cache[cache_key] = icon
+            return icon
         pix = QPixmap(size * 2, size * 2)
         pix.fill(Qt.transparent)
         painter = QPainter(pix)
         renderer.render(painter)
         painter.end()
         pix.setDevicePixelRatio(2.0)
-        return QIcon(pix)
+        icon = QIcon(pix)
+        _icon_cache[cache_key] = icon
+        return icon
     except Exception:
         return QIcon(str(svg_name_or_path))
 

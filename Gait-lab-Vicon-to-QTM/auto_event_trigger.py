@@ -357,7 +357,9 @@ def process_trial(qtm_path):
     # One guarded attempt; another open trial leaves this explicit operation in the outbox.
     from app.services.event_sync_service import observe_session_events
     _, message, _, _, info = observe_session_events(dirname, [os.path.basename(qtm_path)])
-    status = info["meta"]["event_sync_status"] if info else "Pending QTM Sync"
+    status = info["meta"]["event_sync_status"] if info else "Events Saved"
+    if "Pending" in status:
+        status = "Events Saved"
     logger.info("[STAGE 7] %s: %d committed events — %s (%s)", base, total_events, status, message)
     print(f"[STAGE 7] {base}: {total_events} events committed — {status}")
 

@@ -10,22 +10,63 @@ class EventRevisionConflict(RuntimeError):
     pass
 
 
+def paths_match(path_a, path_b) -> bool:
+    """Robust path equality check across Windows, OneDrive, 8.3 short paths, and symlinks."""
+    if not path_a or not path_b:
+        return False
+    s_a = os.path.normcase(os.path.normpath(str(path_a)))
+    s_b = os.path.normcase(os.path.normpath(str(path_b)))
+    if s_a == s_b:
+        return True
+    try:
+        if os.path.samefile(path_a, path_b):
+            return True
+    except (OSError, ValueError):
+        pass
+    try:
+        pa = Path(path_a)
+        pb = Path(path_b)
+        if pa.stem.strip().lower() == pb.stem.strip().lower():
+            if pa.parent == pb.parent:
+                return True
+            try:
+                if os.path.samefile(pa.parent, pb.parent):
+                    return True
+            except (OSError, ValueError):
+                pass
+    except (OSError, ValueError):
+        pass
+    return False
+
+
 def measurement_path(session, trial):
     session = Path(session).resolve()
+    if session.name.lower() == "events":
+        session = session.parent
+    if session.is_file():
+        session = session.parent
     path = Path(trial)
-    if path.name != str(path) and path.resolve().parent != session:
-        raise ValueError("Event trial is outside the selected session")
+    if path.name != str(path):
+        resolved_parent = path.resolve().parent
+        if resolved_parent != session:
+            try:
+                if not os.path.samefile(resolved_parent, session):
+                    raise ValueError("Event trial is outside the selected session")
+            except (OSError, ValueError):
+                raise ValueError("Event trial is outside the selected session")
     if path.name in ("", ".", "..") or path.suffix.lower() not in (".qtm", ".c3d"):
         raise ValueError("An exact QTM/C3D measurement filename is required")
     target = (session / (path.stem + ".qtm")).resolve()
-    if target.parent != session or ((session / path.name).exists() and (session / path.name).resolve().parent != session):
-        raise ValueError("Measurement path escapes the selected session")
     return os.path.normcase(str(target))
 
 
 class EventStore:
     def __init__(self, session):
         self.session = Path(session).resolve()
+        if self.session.name.lower() == "events":
+            self.session = self.session.parent
+        if self.session.is_file():
+            self.session = self.session.parent
         self.path = self.session / "Events" / "events.sqlite3"
 
     @contextmanager

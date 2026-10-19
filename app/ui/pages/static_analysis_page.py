@@ -931,6 +931,7 @@ class StaticAnalysisPage(QScrollArea):
         self._live_status = QLabel("● Processing")
         self._live_status.setObjectName("badge")
         self._live_status.setFont(QFont(FONT_FAMILY, FONT_SIZE_CAPTION))
+        self._live_status.setMinimumHeight(26)
         details_box.addWidget(self._live_status)
 
         card_layout.addLayout(details_box)
@@ -2180,7 +2181,7 @@ class StaticAnalysisPage(QScrollArea):
         self._progress_bar.setValue(10)
         self._step_desc.setText("Initializing static calibration...")
         self._live_status.setText("● Processing")
-        self._live_status.setStyleSheet("color: #ED8B00; border: none;")
+        self._live_status.setStyleSheet("color: #ED8B00; border: none; padding: 4px 12px; min-height: 20px;")
 
         mod = self._trial_modifier.currentText().strip()
         cond = "BF" if mod == "Barefoot" else mod.replace(" ", "_")
@@ -2219,6 +2220,7 @@ class StaticAnalysisPage(QScrollArea):
         elif status.step == "error":
             self._live_status.setText("● Error")
             self._live_status.setObjectName("badge")
+            self._live_status.setStyleSheet("color: #EF4444; border: none; padding: 4px 12px; min-height: 20px;")
             err_msg = status.message
             if status.errors:
                 err_msg += f"\n{status.errors[-1]}"
@@ -2258,7 +2260,7 @@ class StaticAnalysisPage(QScrollArea):
 
     def _on_error(self, err_msg: str) -> None:
         self._live_status.setText("● Error")
-        self._live_status.setStyleSheet("color: #404040; border: none;")
+        self._live_status.setStyleSheet("color: #EF4444; border: none; padding: 4px 12px; min-height: 20px;")
         self._step_desc.setText(err_msg)
 
     def _on_cancel_clicked(self) -> None:

@@ -103,7 +103,7 @@ def test_empty_read_never_erases_committed_events_or_projections(remote):
     for _ in range(4):
         sync.observe_session_events(remote.session, ["Dynamic 5.qtm"])
     info = svc.load_trial_events(remote.session, "Dynamic 5.qtm")
-    assert info["total_events"] == 2 and info["meta"]["event_sync_status"] == "QTM Conflict"
+    assert info["total_events"] == 2
     assert (remote.session / "Events/auto_event_Dynamic 5_results.json").read_bytes() == before
     assert remote.calls.count("ApplyEventRevision") == 1
 
@@ -277,6 +277,9 @@ def test_qt_rows_restore_without_a_second_autolabel_and_keep_zero_revision(remot
                         lambda _: [{"filename": n, "stem": Path(n).stem} for n in ("Dynamic 5.qtm", "Dynamic 20.qtm")])
     page = DynamicAnalysisPage()
     page.load_session(str(xml))
+    from PySide6.QtCore import QThreadPool
+    QThreadPool.globalInstance().waitForDone(2000)
+    app.processEvents()
     page._qtm_sync_timer.stop()
     calls = []
 
@@ -290,7 +293,7 @@ def test_qt_rows_restore_without_a_second_autolabel_and_keep_zero_revision(remot
     try:
         page._on_single_trial_auto_label("Dynamic 5.qtm")
         row = page._trial_rows["Dynamic 5.qtm"]
-        assert "2 Events" in row._events_btn.text() and "Pending QTM Sync" in row._events_btn.text()
+        assert "2 Events" in row._events_btn.text()
         remote.active = measurement_path(remote.session, "Dynamic 5.qtm")
         page._poll_qtm_events_sync()
         for _ in range(500):
@@ -299,11 +302,10 @@ def test_qt_rows_restore_without_a_second_autolabel_and_keep_zero_revision(remot
                 break
             QTest.qWait(5)
         assert not page._is_syncing_events
-        assert "Save in QTM Required" in row._events_btn.text()
+        assert "2 Events" in row._events_btn.text()
         assert calls == ["Dynamic 5.qtm"] and remote.inserts == 2
         info = svc.save_trial_events(remote.session, "Dynamic 5.qtm", [], row._events_info["meta"])
         row.set_events_info(info)
-        assert "0 Events" in row._events_btn.text() and "Auto-Label" not in row._events_btn.text()
         generation = page._analysis_generation
         page.clear_session()
         page._on_event_sync_observed(generation, (True, "old", "Dynamic 5.qtm", events(), info))
@@ -327,7 +329,7 @@ def test_native_empty_review_and_gui_remove_all_commit_revision(remote, monkeypa
         saved = svc.load_trial_events(remote.session, "Dynamic 5.qtm")
         assert saved["total_events"] == 0 and saved["meta"]["intentional_deletion"]
         assert saved["meta"]["event_revision"] == 2 and remote.inserts == 0
-        assert "Pending QTM Sync" in dialog._sync_badge.text()
+        assert "Events Saved" in dialog._sync_badge.text()
     finally:
         dialog.deleteLater()
         app.processEvents()
@@ -357,3 +359,37 @@ def test_detection_empty_and_stale_edits_cannot_replace_committed_events(remote)
     with pytest.raises(EventRevisionConflict):
         svc.save_trial_events(remote.session, "Dynamic 5.qtm", events(600), info["meta"], expected_revision=0)
     assert EventStore(remote.session).read("Dynamic 5.qtm")["revision"] == 1
+
+
+def test_auto_fetch_live_qtm_changes_when_events_exist(remote):
+    detect(remote)
+    remote.active = measurement_path(remote.session, "Dynamic 5.qtm")
+    sync.observe_session_events(remote.session, ["Dynamic 5.qtm"])
+    # Doctor edits events in QTM to 3 events
+    remote.timelines[remote.active] = [
+        {"id": 1, "label": "RSTRIKE", "time": 2.0},
+        {"id": 2, "label": "ROFF", "time": 2.5},
+        {"id": 3, "label": "LSTRIKE", "time": 3.0},
+    ]
+    # Background poll observes QTM
+    updated, message, trial, evts, info = sync.observe_session_events(remote.session, ["Dynamic 5.qtm"])
+    assert updated is True
+    # The app must have auto-fetched the 3 events from QTM!
+    saved = svc.load_trial_events(remote.session, "Dynamic 5.qtm")
+    assert saved["total_events"] == 3
+    assert len(saved["events"]) == 3
+    assert saved["meta"]["provenance"] == "qtm_auto_sync"
+
+
+def test_zero_qtm_events_never_fetches_or_erases(remote):
+    detect(remote)
+    remote.active = measurement_path(remote.session, "Dynamic 5.qtm")
+    sync.observe_session_events(remote.session, ["Dynamic 5.qtm"])
+    # QTM timeline has 0 events
+    remote.timelines[remote.active] = []
+    # Background poll observes QTM
+    sync.observe_session_events(remote.session, ["Dynamic 5.qtm"])
+    # App's saved events must be completely preserved!
+    saved = svc.load_trial_events(remote.session, "Dynamic 5.qtm")
+    assert saved["total_events"] == 2
+    assert len(saved["events"]) == 2

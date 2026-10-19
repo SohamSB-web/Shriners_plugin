@@ -117,7 +117,7 @@ class DynamicAnalysisPage(QScrollArea):
         self._fs_watcher.directoryChanged.connect(self._on_fs_directory_changed)
 
         self._qtm_sync_timer = QTimer(self)
-        self._qtm_sync_timer.setInterval(1200)  # poll every 1.2 seconds
+        self._qtm_sync_timer.setInterval(3000)  # poll every 3 seconds — QTM sync doesn't need sub-second latency
         self._qtm_sync_timer.timeout.connect(self._poll_qtm_events_sync)
 
         self._init_ui()
@@ -561,8 +561,18 @@ class DynamicAnalysisPage(QScrollArea):
             button.setEnabled(False)
 
 
+    def _get_session_dir(self) -> Path:
+        if not self._session_path:
+            return Path(".")
+        p = Path(self._session_path).resolve()
+        return p if p.is_dir() else p.parent
+
     def load_session(self, session_xml_path: str) -> None:
-        """Load session and populate dynamic trials."""
+        """Load session and populate dynamic trials.
+
+        All heavy I/O (OLE2/C3D parsing, forceplate detection, SQLite event
+        reads) is done in a background thread so the UI stays responsive.
+        """
         context = str(Path(session_xml_path).resolve())
         if self._session_path and os.path.normcase(self._session_path) == os.path.normcase(context):
             return
@@ -573,53 +583,91 @@ class DynamicAnalysisPage(QScrollArea):
             button.setEnabled(True)
         ready, _ = self._is_static_calibration_ready()
         self._calib_status_label.setText("● Static Calibration Ready" if ready else "Static calibration required")
-        session_dir = Path(os.path.dirname(self._session_path))
+        session_dir = self._get_session_dir()
 
-        # Setup filesystem watcher for session directory and event results files
         self._setup_fs_watcher(session_dir)
 
-        # Update metadata
         parent_dir = session_dir.parent.name
         self._patient_mrn = f"MRN {parent_dir}"
         self._session_date = session_dir.name
         self._mrn_label.setText(self._patient_mrn)
         self._date_label.setText(self._session_date)
 
-        # Clear existing rows and metadata
-        for row in self._trial_rows.values():
-            row.setParent(None)
-        self._trial_rows.clear()
-        self._trial_metadata.clear()
+        # Show a lightweight placeholder while the background worker loads data
+        self._mrn_label.setText(f"{self._patient_mrn}  —  Loading trials…")
+        self._events_badge.setText("Events: loading…")
 
-        # Organize any loose files and ensure standard subfolders exist
-        from app.services.session_organizer import (
-            find_gcd_file,
-            find_all_gcd_files,
-        )
+        # ── Background worker: all disk I/O happens off the main thread ──────
+        from PySide6.QtCore import QRunnable, QThreadPool, QObject, Signal
+        from app.services.session_organizer import find_gcd_file, find_all_gcd_files
 
-        # Find dynamic trials in folder, deduplicate (.qtm > .c3d), sort naturally, fetch real metadata & strikes
-        trials_info = get_session_dynamic_trials(session_dir)
+        generation = self._analysis_generation
 
-        for i, t in enumerate(trials_info):
-            fname = t["filename"]
-            stem = t["stem"]
+        class _Signals(QObject):
+            done = Signal(object)  # payload dict
+
+        class _Loader(QRunnable):
+            def __init__(self, sdir, gen):
+                super().__init__()
+                self._sdir = sdir
+                self._gen = gen
+                self.signals = _Signals()
+
+            def run(self):
+                try:
+                    trials_info = get_session_dynamic_trials(self._sdir)
+                    enriched = []
+                    for t in trials_info:
+                        fname = t["filename"]
+                        stem  = t["stem"]
+                        gcd   = find_gcd_file(self._sdir, stem)
+                        ev    = load_trial_events(self._sdir, fname)
+                        enriched.append({**t, "_gcd_exists": gcd is not None and gcd.is_file(),
+                                         "_ev_info": ev})
+                    gcd_files = find_all_gcd_files(self._sdir)
+                    payload = {"generation": self._gen, "trials": enriched,
+                               "has_gcds": bool(gcd_files), "error": None}
+                except Exception as exc:
+                    payload = {"generation": self._gen, "trials": [], "has_gcds": False,
+                               "error": str(exc)}
+                try:
+                    self.signals.done.emit(payload)
+                except RuntimeError:
+                    pass  # widget was destroyed before worker finished
+
+        loader = _Loader(session_dir, generation)
+        loader.signals.done.connect(self._on_session_loaded)
+        QThreadPool.globalInstance().start(loader)
+
+    def _on_session_loaded(self, payload: dict) -> None:
+        """Called on the main thread when the background session loader finishes."""
+        if payload["generation"] != self._analysis_generation:
+            return  # stale load — user already navigated away
+
+        self._mrn_label.setText(self._patient_mrn)  # restore clean label
+
+        if payload["error"]:
+            logger.error("Session load failed: %s", payload["error"])
+            self._events_badge.setText("Events: —")
+            return
+
+        session_dir = self._get_session_dir()
+        dark = getattr(self, "_is_dark", False)
+
+        for i, t in enumerate(payload["trials"]):
+            fname  = t["filename"]
             strike = t.get("comment", "")
-            meta_str = t.get("metadata_str", "")
-
-            # Check if GCD already exists in GCD/ or session_dir
-            gcd_file = find_gcd_file(session_dir, stem)
-            status = "COMPLETE" if gcd_file is not None and gcd_file.is_file() else "READY"
+            status = "COMPLETE" if t["_gcd_exists"] else "READY"
+            ev_info = t["_ev_info"]
 
             row = TrialRowWidget(
                 trial_id=f"#{i+1}",
                 name=fname,
-                metadata=meta_str,
+                metadata=t.get("metadata_str", ""),
                 status=status,
                 selected=(i == 0),
                 strike=strike,
             )
-            # Load auto event detection info if present
-            ev_info = load_trial_events(session_dir, fname)
             row.set_events_info(ev_info)
             if ev_info and ev_info.get("total_events", 0) > 0 and status == "READY":
                 row.set_status("EVENTS LABELED")
@@ -628,13 +676,12 @@ class DynamicAnalysisPage(QScrollArea):
             row.auto_label_clicked.connect(self._on_single_trial_auto_label)
             row.push_to_qtm_clicked.connect(self._on_push_trial_events_to_qtm)
             row.pull_from_qtm_clicked.connect(self._on_single_trial_pull_from_qtm)
-            row.apply_theme(dark=getattr(self, "_is_dark", False))
+            row.apply_theme(dark=dark)
 
             self._trials_container.addWidget(row)
             self._trial_rows[fname] = row
             self._trial_metadata[fname] = t
 
-            # Auto-populate force plate configuration based on actual strike comment
             c_lower = strike.lower()
             if "right" in c_lower:
                 self._force_plate_configs[fname] = {"left_plate": "0", "right_plate": "FP0"}
@@ -646,16 +693,14 @@ class DynamicAnalysisPage(QScrollArea):
         self._update_events_summary_badge()
         logger.info("Loaded %d dynamic trials for session: %s", len(self._trial_rows), session_dir)
 
-        # Start live background QTM sync timer and trigger initial check
-        if hasattr(self, "_qtm_sync_timer"):
-            self._qtm_sync_timer.start(1200)
-            self._schedule(400, self._poll_qtm_events_sync)
-
-        # If session already contains generated GCD files, reveal presentation & export buttons
-        gcd_files = find_all_gcd_files(session_dir)
-        if gcd_files:
+        if payload["has_gcds"]:
             self._view_pres_btn.setVisible(True)
             self._export_pdf_btn.setVisible(True)
+
+        # Start live background QTM sync timer and trigger initial check
+        if hasattr(self, "_qtm_sync_timer"):
+            self._qtm_sync_timer.start(3000)
+            self._schedule(800, self._poll_qtm_events_sync)
 
     def _select_all_trials(self) -> None:
         for row in self._trial_rows.values():
@@ -666,13 +711,15 @@ class DynamicAnalysisPage(QScrollArea):
             row.set_selected(False)
 
     def _update_events_summary_badge(self) -> None:
-        """Refresh dynamic trials event detection count badge."""
-        session_dir = Path(os.path.dirname(self._session_path)) if self._session_path else Path(".")
-        trial_files = list(self._trial_rows.keys())
-        summary = get_session_events_summary(session_dir, trial_files)
-        n_labeled = summary["labeled_trials"]
-        n_total = summary["total_trials"]
-        tot_ev = summary["total_events"]
+        """Refresh dynamic trials event detection count badge from in-memory row state."""
+        n_total = len(self._trial_rows)
+        n_labeled = 0
+        tot_ev = 0
+        for row in self._trial_rows.values():
+            info = row.events_info
+            if info and info.get("total_events", 0) > 0:
+                n_labeled += 1
+                tot_ev += info.get("total_events", 0)
 
         if n_total == 0:
             self._events_badge.setText("Events: None")
@@ -726,7 +773,7 @@ class DynamicAnalysisPage(QScrollArea):
 
     def _on_view_trial_events(self, trial_filename: str) -> None:
         """Open Event Details inspection dialog for trial."""
-        session_dir = Path(os.path.dirname(self._session_path)) if self._session_path else Path(".")
+        session_dir = self._get_session_dir()
         ev_info = load_trial_events(session_dir, trial_filename)
         # Resolve trial capture frequency from C3D if available
         stem = Path(trial_filename).stem
@@ -771,7 +818,7 @@ class DynamicAnalysisPage(QScrollArea):
 
     def _on_push_trial_events_to_qtm(self, trial_filename: str) -> None:
         """Push stored events for this trial directly onto the QTM timeline if open."""
-        session_dir = Path(os.path.dirname(self._session_path)) if self._session_path else Path(".")
+        session_dir = self._get_session_dir()
         ev_info = load_trial_events(session_dir, trial_filename)
         if ev_info is None:
             QMessageBox.information(
@@ -800,7 +847,7 @@ class DynamicAnalysisPage(QScrollArea):
     def _review_event_conflict(self, trial_filename):
         from app.services.event_store import EventStore
         from app.services.event_sync_service import event_rpc, resolve_event_conflict
-        session_dir = Path(self._session_path).parent
+        session_dir = self._get_session_dir()
         try:
             remote = event_rpc("GetEventSnapshot")
             record = EventStore(session_dir).read(trial_filename)
@@ -830,7 +877,7 @@ class DynamicAnalysisPage(QScrollArea):
         """
         if not self._session_path:
             return
-        session_dir = Path(os.path.dirname(self._session_path))
+        session_dir = self._get_session_dir()
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             updated, msg, matched_file, clean_events, ev_info = sync_qtm_events_to_session(
@@ -849,12 +896,16 @@ class DynamicAnalysisPage(QScrollArea):
         if updated or (ev_info and ev_info.get("events")):
             row = self._trial_rows.get(trial_filename)
             if row and ev_info:
-                row.set_events_info(ev_info)
                 if ev_info.get("total_events", 0) == 0:
-                    if row._status in ("EVENTS LABELED", "EVENTS_LABELED"):
-                        row.set_status("READY")
-                    row.set_events_info(ev_info)
-                if ev_info.get("total_events", 0) > 0 and row._status in ("READY", "SELECTED"):
+                    QMessageBox.information(
+                        self,
+                        "QTM Timeline Empty",
+                        f"No events were found on the QTM timeline for '{trial_filename}'.\n\n"
+                        "Existing labeled events in the application were preserved.",
+                    )
+                    return
+                row.set_events_info(ev_info)
+                if row._status in ("READY", "SELECTED"):
                     row.set_status("EVENTS LABELED")
             self._update_events_summary_badge()
             QMessageBox.information(
@@ -877,7 +928,7 @@ class DynamicAnalysisPage(QScrollArea):
         """
         if not self._session_path or not self._trial_rows:
             return
-        session_dir = Path(os.path.dirname(self._session_path))
+        session_dir = self._get_session_dir()
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             trial_names = list(self._trial_rows.keys())
@@ -896,12 +947,16 @@ class DynamicAnalysisPage(QScrollArea):
 
         if matched_file and matched_file in self._trial_rows and ev_info:
             row = self._trial_rows[matched_file]
-            row.set_events_info(ev_info)
             if ev_info.get("total_events", 0) == 0:
-                if row._status in ("EVENTS LABELED", "EVENTS_LABELED"):
-                    row.set_status("READY")
-                row.set_events_info(ev_info)
-            if ev_info.get("total_events", 0) > 0 and row._status in ("READY", "SELECTED"):
+                QMessageBox.information(
+                    self,
+                    "QTM Timeline Empty",
+                    f"No events were found on the QTM timeline for '{matched_file}'.\n\n"
+                    "Existing labeled events in the application were preserved.",
+                )
+                return
+            row.set_events_info(ev_info)
+            if row._status in ("READY", "SELECTED"):
                 row.set_status("EVENTS LABELED")
             self._update_events_summary_badge()
             QMessageBox.information(
@@ -933,7 +988,7 @@ class DynamicAnalysisPage(QScrollArea):
         if self._processing_queue:
             return
 
-        session_dir = Path(os.path.dirname(self._session_path))
+        session_dir = self._get_session_dir()
         if not session_dir.is_dir():
             return
 
@@ -946,11 +1001,7 @@ class DynamicAnalysisPage(QScrollArea):
             lambda trial: self._on_event_sync_started(generation, trial))
 
     def _on_event_sync_started(self, generation, trial):
-        if generation == self._analysis_generation and trial in self._trial_rows:
-            row = self._trial_rows[trial]
-            if row._events_info:
-                info = dict(row._events_info, meta=dict(row._events_info["meta"], event_sync_status="Syncing to QTM"))
-                row.set_events_info(info)
+        pass
 
     def _on_event_sync_observed(self, generation, result):
         self._is_syncing_events = False
@@ -960,12 +1011,9 @@ class DynamicAnalysisPage(QScrollArea):
         updated, message, trial, events, info = result
         if info and trial in self._trial_rows:
             self._trial_rows[trial].set_events_info(info)
+            if info.get("total_events", 0) > 0 and self._trial_rows[trial]._status in ("READY", "SELECTED"):
+                self._trial_rows[trial].set_status("EVENTS LABELED")
             self._update_events_summary_badge()
-        elif not trial and self._session_path:
-            for filename, row in self._trial_rows.items():
-                saved = load_trial_events(Path(self._session_path).parent, filename)
-                if saved:
-                    row.set_events_info(saved)
         if message != getattr(self, "_last_event_sync_notice", None):
             logger.info("QTM event observation: %s", message)
             self._last_event_sync_notice = message
@@ -1258,7 +1306,8 @@ class DynamicAnalysisPage(QScrollArea):
                 else:
                     row.set_status("ERROR")
             self._update_events_summary_badge()
-            self._last_completion_message = ("Auto-Label events committed — " + ev_info.get("meta", {}).get("event_sync_status", "Events Saved")) if ev_info else "Auto-Label did not commit events"
+            tot = ev_info.get("total_events", 0) if ev_info else 0
+            self._last_completion_message = f"Auto-Label completed ({tot} events)" if ev_info else "Auto-Label did not commit events"
         else:  # dynamic
             from app.services.session_organizer import find_gcd_file
             stem = Path(self._current_processing_file).stem

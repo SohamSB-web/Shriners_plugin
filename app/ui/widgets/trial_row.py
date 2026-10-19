@@ -89,6 +89,7 @@ class TrialRowWidget(QFrame):
         self._status = status
         self._hovered = False
         self._events_info: dict | None = None
+        self._appearance_key: tuple | None = None  # dirty-check fingerprint
 
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(62)
@@ -265,6 +266,17 @@ class TrialRowWidget(QFrame):
         self._meta_label.setText(meta)
 
     def set_events_info(self, info: dict | None) -> None:
+        # Skip full repaint when the relevant parts of info haven't changed.
+        old = self._events_info
+        if info is old:
+            return
+        if (info is not None and old is not None
+                and info.get("total_events") == old.get("total_events")
+                and info.get("summary_text") == old.get("summary_text")
+                and info.get("meta", {}).get("event_sync_status") == old.get("meta", {}).get("event_sync_status")
+                and info.get("meta", {}).get("event_revision") == old.get("meta", {}).get("event_revision")):
+            self._events_info = info  # update reference but skip repaint
+            return
         self._events_info = info
         self._update_appearance()
 
@@ -293,6 +305,16 @@ class TrialRowWidget(QFrame):
             self.auto_label_clicked.emit(self.filename)
 
     def _update_appearance(self) -> None:
+        # Build a cheap fingerprint of all state that drives visual output.
+        # If nothing changed, skip the expensive setStyleSheet / setIcon calls.
+        ev_tot = self._events_info.get("total_events", 0) if self._events_info else 0
+        ev_status = (self._events_info or {}).get("meta", {}).get("event_sync_status", "")
+        ev_rev = (self._events_info or {}).get("meta", {}).get("event_revision")
+        new_key = (self._is_dark, self._selected, self._hovered, self._status,
+                   getattr(self, "_badge_type", "empty"), ev_tot, ev_status, ev_rev)
+        if new_key == self._appearance_key:
+            return
+        self._appearance_key = new_key
         b_type = getattr(self, "_badge_type", "empty")
 
         if self._is_dark:
@@ -482,10 +504,13 @@ class TrialRowWidget(QFrame):
         )
         if self._events_info and self._events_info.get("meta", {}).get("event_revision"):
             meta = self._events_info["meta"]
-            status = meta.get("event_sync_status", "Events Saved")
-            self._events_btn.setText(f" {self._events_info.get('total_events', 0)} Events — {status}")
-            self._events_btn.setToolTip("\n".join(filter(None, [self._events_info.get("summary_text"), status,
-                                                           meta.get("event_sync_error"), meta.get("projection_error")])))
+            tot = self._events_info.get("total_events", 0)
+            if tot > 0:
+                self._events_btn.setText(f" {tot} Events")
+                self._events_btn.setToolTip(f"{tot} gait events labeled for {self.filename}")
+            else:
+                self._events_btn.setText(" Auto-Label")
+                self._events_btn.setToolTip("Click to run automated gait event labeling on this trial.")
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:

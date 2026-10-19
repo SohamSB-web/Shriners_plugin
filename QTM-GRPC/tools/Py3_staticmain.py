@@ -104,8 +104,9 @@ class QtmCommandServicer(qtm_data_transfer_pb2_grpc.QtmTkinterBridgeServicer):
                 return qtm_data_transfer_pb2.Ack(message=f"Command '{cmd_name}' executed.", success=True)
             
             elif cmd_name in {"GetEventSnapshot", "ApplyEventRevision"}:
-                from app.services.qtm_event_protocol import guarded_event_command
-                payload = guarded_event_command(qtm, qtm_event, tline, cmd_name, args)
+                import app.services.qtm_event_protocol as qep
+                importlib.reload(qep)
+                payload = qep.guarded_event_command(qtm, qtm_event, tline, cmd_name, args)
                 return qtm_data_transfer_pb2.Ack(message=json.dumps(payload), success=True)
 
             elif cmd_name == "GetActiveMeasurement":

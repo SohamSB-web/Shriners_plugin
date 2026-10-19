@@ -369,14 +369,14 @@ class CasePresentationPage(QWidget):
         self._title_label = QLabel("CASE PRESENTATION")
         self._title_label.setFont(QFont(FONT_FAMILY, 15, QFont.Bold))
         self._title_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self._title_label.setFixedHeight(30)
+        self._title_label.setFixedHeight(34)
         top_row.addWidget(self._title_label)
 
         self._badges_container = QWidget()
-        self._badges_container.setFixedHeight(30)
+        self._badges_container.setFixedHeight(34)
         self._badges_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         badges_layout = QHBoxLayout(self._badges_container)
-        badges_layout.setContentsMargins(0, 0, 0, 0)
+        badges_layout.setContentsMargins(0, 2, 0, 2)
         badges_layout.setSpacing(6)
         badges_layout.setAlignment(Qt.AlignVCenter)
 
@@ -458,16 +458,16 @@ class CasePresentationPage(QWidget):
 
         # Row 2 (Primary trial row: Left trials by default, or Right when in R mode)
         self._row_left = QWidget()
-        self._row_left.setFixedHeight(36)
+        self._row_left.setFixedHeight(40)
         self._row_left_layout = QHBoxLayout(self._row_left)
         self._row_left_layout.setContentsMargins(0, 0, 0, 0)
         self._row_left_layout.setSpacing(8)
 
         # Left Limb Trials Container
         self._left_container = QWidget()
-        self._left_container.setFixedHeight(36)
+        self._left_container.setFixedHeight(40)
         left_pills_layout = QHBoxLayout(self._left_container)
-        left_pills_layout.setContentsMargins(0, 3, 0, 3)
+        left_pills_layout.setContentsMargins(0, 5, 0, 5)
         left_pills_layout.setSpacing(3)
 
         self._left_label = QLabel("LEFT")
@@ -514,9 +514,9 @@ class CasePresentationPage(QWidget):
 
         # Actions Container: Mean pill + Batch actions ([All], [Clear], [MR Only])
         self._actions_container = QWidget()
-        self._actions_container.setFixedHeight(36)
+        self._actions_container.setFixedHeight(40)
         actions_layout = QHBoxLayout(self._actions_container)
-        actions_layout.setContentsMargins(0, 3, 0, 3)
+        actions_layout.setContentsMargins(0, 5, 0, 5)
         actions_layout.setSpacing(4)
 
         # Divider between Trials and Actions
@@ -567,16 +567,16 @@ class CasePresentationPage(QWidget):
 
         # Row 3 (Secondary trial row: Right trials when in Bilateral mode)
         self._row_right = QWidget()
-        self._row_right.setFixedHeight(36)
+        self._row_right.setFixedHeight(40)
         self._row_right_layout = QHBoxLayout(self._row_right)
         self._row_right_layout.setContentsMargins(0, 0, 0, 0)
         self._row_right_layout.setSpacing(8)
 
         # Right Limb Trials Container
         self._right_container = QWidget()
-        self._right_container.setFixedHeight(36)
+        self._right_container.setFixedHeight(40)
         right_pills_layout = QHBoxLayout(self._right_container)
-        right_pills_layout.setContentsMargins(0, 3, 0, 3)
+        right_pills_layout.setContentsMargins(0, 5, 0, 5)
         right_pills_layout.setSpacing(3)
 
         self._right_label = QLabel("RIGHT")
@@ -892,13 +892,10 @@ class CasePresentationPage(QWidget):
         """Attempt to load default normative data file."""
         candidates = [
             Path(__file__).resolve().parent.parent.parent.parent / "MAC_CasePresentation" / "TD_Run_Ave.GCD",
-<<<<<<< HEAD
             Path.cwd() / "MAC_CasePresentation" / "TD_Ave.GCD",
             Path(__file__).resolve().parent.parent.parent / "MAC_CasePresentation" / "TD_Ave.GCD",
-=======
             Path.cwd() / "MAC_CasePresentation" / "TD_Run_Ave.GCD",
             Path(__file__).resolve().parent.parent.parent / "MAC_CasePresentation" / "TD_Run_Ave.GCD",
->>>>>>> defe443d7a604f85689eb0881a9626af2e6a91e5
         ]
         for norm_file in candidates:
             if norm_file.is_file():
@@ -1824,11 +1821,7 @@ class CasePresentationPage(QWidget):
                 l_name = settings.left_names[plot_idx] if plot_idx < len(settings.left_names) else ""
                 r_name = settings.right_names[plot_idx] if plot_idx < len(settings.right_names) else ""
                 norm_key = (
-<<<<<<< HEAD
                     
-=======
-                   
->>>>>>> defe443d7a604f85689eb0881a9626af2e6a91e5
                     GCDService.find_norm_variable(self._norm_data, l_name)
                     or GCDService.find_norm_variable(self._norm_data, r_name)
                 )

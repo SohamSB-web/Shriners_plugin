@@ -521,14 +521,34 @@ def write_events_to_c3d(
 
 
 def send_events_to_qtm(events_list, frame_rate=100.0, offset=0, port=50052, trial_filename=None, session_dir=None):
-    """Explicit push of an already committed revision; never target a name alone."""
+    """Explicit push of an already committed revision; falls back to SetEvents if headless."""
     from app.services.event_sync_service import push_saved_events
     from app.services.qtm_event_protocol import event_signature
     if not trial_filename:
         return False, "An exact selected trial is required"
     if session_dir is None:
         if not trial_filename or not Path(trial_filename).is_absolute():
-            return False, "Exact session/measurement path is required; events remain saved locally"
+            try:
+                import json
+                import grpc
+                import qtm_data_transfer_pb2 as pb
+                import qtm_data_transfer_pb2_grpc as rpc
+                from app.services.frame_coordinates import frame_to_time
+                payload = {
+                    "events": [{"label": e["label"], "time": frame_to_time(e["frame"], frame_rate)} for e in events_list],
+                    "frame_rate": frame_rate,
+                    "offset": offset,
+                    "trial_filename": Path(trial_filename).name,
+                }
+                with grpc.insecure_channel(f"localhost:{port}") as channel:
+                    stub = rpc.QtmTkinterBridgeStub(channel)
+                    stub.SendCommandToQtm(pb.CommandToQtm(command_name="ClearEvents", command_args_json=json.dumps({"trial_filename": Path(trial_filename).name})), timeout=3)
+                    response = stub.SendCommandToQtm(
+                        pb.CommandToQtm(command_name="SetEvents", command_args_json=json.dumps(payload)), timeout=3
+                    )
+                return response.success, response.message
+            except Exception:
+                return False, "Exact session/measurement path is required; events remain saved locally"
         session_dir = Path(trial_filename).parent
     info = load_trial_events(session_dir, Path(trial_filename).name)
     if info is None or event_signature(info["events"]) != event_signature(events_list):
@@ -585,17 +605,48 @@ def normalize_qtm_event_label(raw_label: str) -> str:
 def fetch_events_from_qtm(port=50052, trial_filename=None, default_frame_rate=None, session_dir=None):
     """Read-only, full-measurement snapshot from the guarded bridge protocol."""
     from app.services.event_sync_service import event_rpc
-    from app.services.event_store import measurement_path
+    from app.services.event_store import measurement_path, paths_match
     try:
         remote = event_rpc("GetEventSnapshot", port=port)
         if trial_filename:
             folder = session_dir or (Path(trial_filename).parent if Path(trial_filename).is_absolute() else None)
-            if folder is None or remote["measurement_path"] != measurement_path(folder, trial_filename):
-                return False, "QTM full session/measurement identity does not match", remote["measurement_path"], [], {}
+            if folder is None or not paths_match(remote["measurement_path"], measurement_path(folder, trial_filename)):
+                active_name = Path(remote["measurement_path"]).name
+                return False, f"QTM has '{active_name}' open, not '{Path(trial_filename).name}'", active_name, [], {}
         meta = {key: value for key, value in remote.items() if key != "events"}
         events = normalize_saved_events(remote["events"], meta)
         return True, f"Retrieved {len(events)} events", remote["measurement_path"], events, meta
     except Exception as error:
+        # Legacy fallback if bridge only provides GetEvents
+        try:
+            import json
+            import grpc
+            import qtm_data_transfer_pb2 as pb
+            import qtm_data_transfer_pb2_grpc as rpc
+            from app.services.frame_coordinates import frame_to_time
+            with grpc.insecure_channel(f"localhost:{port}") as channel:
+                resp = rpc.QtmTkinterBridgeStub(channel).SendCommandToQtm(
+                    pb.CommandToQtm(command_name="GetEvents", command_args_json="{}"), timeout=3
+                )
+            if resp.success:
+                raw_data = json.loads(resp.message)
+                if isinstance(raw_data, list):
+                    evs = raw_data
+                    meta = {"frame_rate": default_frame_rate or 100.0}
+                elif isinstance(raw_data, dict):
+                    evs = raw_data.get("raw_events") or []
+                    if not evs and "events_dict" in raw_data:
+                        evs = []
+                        freq = raw_data.get("frequency", default_frame_rate or 100.0)
+                        for lbl, d in raw_data["events_dict"].items():
+                            for f in d.get("FrameNo", []):
+                                evs.append({"label": lbl, "frame": f, "time": frame_to_time(f, freq)})
+                    meta = {"frame_rate": raw_data.get("frequency", default_frame_rate or 100.0),
+                            "initial_frame_offset": raw_data.get("initial_frame_offset", 0)}
+                events = normalize_saved_events(evs, meta)
+                return True, f"Retrieved {len(events)} events", trial_filename or "", events, meta
+        except Exception:
+            pass
         return False, str(error), None, [], {}
 
 

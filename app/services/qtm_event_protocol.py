@@ -16,11 +16,20 @@ def event_signature(events):
     return sorted([[event_label(e["label"]), int(e["frame"])] for e in events])
 
 
+from app.services.event_store import paths_match
+
+
 def active_path(qtm):
-    path = qtm.file.get_path()
-    if not isinstance(path, str) or not Path(path).is_absolute() or Path(path).suffix.lower() != ".qtm":
-        raise RuntimeError("QTM did not expose a saved measurement's full path")
-    return os.path.normcase(str(Path(path).resolve()))
+    try:
+        path = qtm.file.get_path()
+    except Exception as exc:
+        raise RuntimeError(f"No measurement is open in QTM ({exc})")
+    if not path or not isinstance(path, str):
+        raise RuntimeError("No measurement is open in QTM")
+    p = Path(path)
+    if not p.is_absolute() or p.suffix.lower() != ".qtm":
+        raise RuntimeError(f"Open QTM file is not a valid saved .qtm measurement: '{path}'")
+    return os.path.normcase(str(p.resolve()))
 
 
 def guarded_event_command(qtm, event_api, timeline, command, args):
@@ -31,7 +40,7 @@ def guarded_event_command(qtm, event_api, timeline, command, args):
         events = [{**e, "label": event_label(e["label"]),
                    "frame": time_to_frame(e["time"], frequency)} for e in raw
                   if event_label(e["label"]) in {"RSTRIKE", "ROFF", "LSTRIKE", "LOFF"}]
-        if active_path(qtm) != path:
+        if not paths_match(active_path(qtm), path):
             raise RuntimeError("QTM measurement changed during event read")
         measured = timeline.get_measured_range()
         return {"measurement_path": path, "events": events, "frame_rate": frequency,
@@ -43,8 +52,8 @@ def guarded_event_command(qtm, event_api, timeline, command, args):
     if command == "GetEventSnapshot":
         return remote
     target = args.get("measurement_path")
-    if not target or not Path(target).is_absolute() or os.path.normcase(str(Path(target).resolve())) != remote["measurement_path"]:
-        raise RuntimeError("Exact patient/session/measurement path mismatch; events not written")
+    if not target or not Path(target).is_absolute() or not paths_match(target, remote["measurement_path"]):
+        raise RuntimeError(f"Exact measurement path mismatch: active QTM file '{Path(remote['measurement_path']).name}' does not match target")
     if event_signature(remote["events"]) != args.get("expected_events"):
         raise RuntimeError("QTM Event Conflict: timeline changed before application")
     desired = args["events"]
@@ -53,13 +62,28 @@ def guarded_event_command(qtm, event_api, timeline, command, args):
             raise ValueError("Unsupported gait event label")
         frame_to_time(e["frame"], remote["frame_rate"])
     # Recheck the full identity before every mutation; leave unrelated QTM event types intact.
-    for e in raw:
-        if event_label(e["label"]) in {"RSTRIKE", "ROFF", "LSTRIKE", "LOFF"}:
-            if active_path(qtm) != target:
+    has_delete = hasattr(event_api, "delete_event")
+    has_clear = hasattr(event_api, "clear_events")
+    non_gait_events = [e for e in raw if event_label(e.get("label", "")) not in {"RSTRIKE", "ROFF", "LSTRIKE", "LOFF"}]
+
+    if has_delete:
+        for e in raw:
+            if event_label(e.get("label", "")) in {"RSTRIKE", "ROFF", "LSTRIKE", "LOFF"}:
+                if not paths_match(active_path(qtm), target):
+                    raise RuntimeError("QTM measurement changed before event deletion")
+                event_api.delete_event(e.get("id"))
+    elif has_clear:
+        if raw:
+            if not paths_match(active_path(qtm), target):
                 raise RuntimeError("QTM measurement changed before event deletion")
-            event_api.delete_event(e["id"])
+            event_api.clear_events()
+            for e in non_gait_events:
+                try:
+                    event_api.add_event({"label": e["label"], "time": float(e["time"])})
+                except Exception:
+                    pass
     for e in desired:
-        if active_path(qtm) != target:
+        if not paths_match(active_path(qtm), target):
             raise RuntimeError("QTM measurement changed before event insertion")
         event_api.add_event({"label": event_label(e["label"]), "time": frame_to_time(e["frame"], remote["frame_rate"])})
     verified, _ = snapshot()
