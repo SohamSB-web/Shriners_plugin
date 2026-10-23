@@ -45,7 +45,7 @@ def plain(value):
 marker_error = None
 if args.mode.startswith('legacy'):
     # Exact committed baseline, not the other agent's changing working files.
-    source = subprocess.check_output(['git', 'show', 'e6b06a1:Gait-lab-Vicon-to-QTM/Py3_StaticMain.py'], cwd=root).decode('utf8')
+    source = subprocess.check_output(['git', 'show', 'origin/main:Gait-lab-Vicon-to-QTM/Py3_StaticMain.py'], cwd=root).decode('utf8')
     if args.mode == 'legacy-normalized':
         start = source.index('        def saveResultsinC3D():')
         prefix, body = source[:start], source[start:]
@@ -104,7 +104,8 @@ if args.mode.startswith('legacy'):
 else:
     from static_calibration_engine import run_static_calibration
     imports = perf_counter() - started
-    result = run_static_calibration(args.session, args.filename, args.condition, qtm_sender=sender)
+    result = run_static_calibration(args.session, args.filename, args.condition)
+    commands = result.modeled_commands
     captured = result.values
     saved = result.calibration_path
     owner = result.values['self']

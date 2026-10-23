@@ -14,25 +14,39 @@ def load_static_trial(session_path, filename):
     xml = Path(session_path).resolve(strict=True)
     if Path(filename).name != filename:
         raise ValueError("Static filename must be a filename within the selected session")
-    measurements = [m for m in ET.parse(xml).getroot().iter('Measurement')
-                    if m.get('Filename') == filename]
+    selected = Path(filename)
+    if selected.suffix.lower() not in ('.qtm', '.c3d'):
+        raise ValueError('Select a static C3D or its session XML measurement filename')
+    session_root = ET.parse(xml).getroot()
+    measurements = [m for m in session_root.iter('Measurement')
+                    if m.get('Filename') == filename or
+                    selected.suffix.lower() == '.c3d' and Path(m.get('Filename', '')).stem == selected.stem]
     if len(measurements) != 1:
         raise ValueError(f"Expected one XML measurement for {filename!r}; found {len(measurements)}")
-    # Retain the original extractor's stem convention for existing recordings.
-    stem = filename.split('.')[0]
+    if measurements[0].get('Type', 'Static').lower() != 'static':
+        raise ValueError(f'Selected measurement is not Static: {filename}')
+    stem = selected.stem
     trial_path = (xml.parent / (stem + '.c3d')).resolve(strict=True)
     if trial_path.parent != xml.parent:
         raise ValueError("Static C3D resolves outside the selected session")
-    reader = c3d(str(trial_path), extract_forceplat_data=False)
+    try:
+        reader = c3d(str(trial_path), extract_forceplat_data=False)
+    except Exception as error:
+        raise ValueError(f'Cannot read static C3D {trial_path}: {error}') from error
+    points = reader['data']['points']
+    if points.ndim != 3 or points.shape[1] == 0 or points.shape[2] == 0:
+        raise ValueError(f'Static C3D has no marker samples: {trial_path}')
     offset = reader['header']['points']['first_frame']
     frames = reader['parameters']['POINT']['FRAMES']['value'][0]
     fields = {'Type': measurements[0].get('Type'), 'Filename': stem,
-              'Path': str(xml.parent), 'Name': 'Test', 'initial_frame_offset': offset,
+              'Path': str(xml.parent), 'Name': session_root.findtext('Fields/Name', ''), 'initial_frame_offset': offset,
               'Capture_Frequency': reader['parameters']['POINT']['RATE']['value'][0],
               'Frames': frames, 'Points': reader['parameters']['POINT']['LABELS']['value'],
               'Units': reader['parameters']['POINT']['UNITS']['value'][0],
               'First Frame': max(reader['header']['points']['first_frame'] - offset, 0),
               'Last Frame': min(reader['header']['points']['last_frame'] + 1 - offset, frames)}
+    if fields['Capture_Frequency'] <= 0 or fields['Last Frame'] <= fields['First Frame']:
+        raise ValueError(f'Static C3D has an invalid capture rate or frame range: {trial_path}')
     processing = reader['parameters'].get('PROCESSING', {})
     skip = {'Session ID', 'ID', 'BodyMass', 'Mass', 'Bodymass', 'Uncropped Measurement Frames',
             'Cropped Measurement Start Frame', 'Cropped Measurement End Frame'}
@@ -54,6 +68,8 @@ def load_static_trial(session_path, filename):
             elif not declared and key in lengths and isinstance(value, (int, float, np.floating)) and 0 < abs(value) < 10:
                 value *= 1000
         fields[key] = value
+    if not str(fields.get('Name', '')).strip():
+        raise ValueError('Missing subject Name in static C3D PROCESSING data and session XML')
     fields['Bodymass'] = fields.get('BodyMass', fields.get('Bodymass', 0))
     for index, label in enumerate(fields['Points']):
         marker = {axis: reader['data']['points'][i][index] for i, axis in enumerate(('X', 'Y', 'Z'))}

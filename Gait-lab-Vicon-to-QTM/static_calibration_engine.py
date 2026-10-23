@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from types import FunctionType, SimpleNamespace
+from types import SimpleNamespace
 
 import numpy as np
 import static_calibration_calculations as calculations
@@ -45,7 +45,7 @@ def load_clinical_parameters(state):
     for name in required:
         try:
             value = float(inputs[name])
-        except (TypeError, ValueError) as error:
+        except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"Missing or invalid clinical parameter: {name}") from error
         if not np.isfinite(value) or value < 0:
             raise ValueError(f"Invalid clinical parameter: {name}={inputs[name]!r}")
@@ -77,14 +77,21 @@ def load_clinical_parameters(state):
 
 
 def _command_collectors(commands):
-    # Reuse the exact shared API payload builders without changing gapi globals.
-    import gapi
-    def collect(command, payload):
-        commands.append((command, json.loads(payload)))
-    namespace = dict(vars(gapi), grpc_send_command=collect)
-    return {name: FunctionType(getattr(gapi, name).__code__, namespace, name,
-                               getattr(gapi, name).__defaults__)
-            for name in ('SetTrajectory', 'CreateModeledMarker')}
+    # Retain the gapi payload contract without importing its live transport.
+    def SetTrajectory(name, X, Y, Z, exists, start, end, offset=0, target_range=None):
+        if not (len(X) == len(Y) == len(Z) == len(exists)):
+            raise ValueError(f"Trajectory '{name}': X/Y/Z/exists lengths differ")
+        payload = {'name': name}
+        for key, values in (('X', X), ('Y', Y), ('Z', Z)):
+            payload[key] = [float(v) if v is not None else None for v in values]
+        payload['exists'] = [bool(v) for v in exists]
+        payload['source_start'] = int(offset)
+        if target_range is not None:
+            payload['target_range'] = target_range
+        commands.append(('SetTrajectory', payload))
+    def CreateModeledMarker(name):
+        commands.append(('CreateModelMarker', {'markerName': name}))
+    return dict(SetTrajectory=SetTrajectory, CreateModeledMarker=CreateModeledMarker)
 
 
 def write_qtm_outputs(commands, sender=None):
@@ -113,10 +120,22 @@ def _validate_calibration(path):
         value = np.asarray(getattr(owner, name))
         if value.shape != (3, 3) or not np.isfinite(value).all():
             raise ValueError(f"Invalid calibration matrix: {name}; check required marker data")
+    required = ['valueETrunkAnatRelTech', 'valueEPelvisAnatRelTech']
+    for side in ('Left', 'Right'):
+        required.extend(f'value{side}E{segment}AnatRelTech'
+                        for segment in ('Thigh', 'ShankProximal', 'ShankDistal', 'Foot'))
+        required.append(f'value{side}EFootAnat2RelTech')
+        if int(getattr(owner, f'value{side}FootModelCheck', 0)):
+            required.extend(f'value{side}E{segment}AnatRelTech'
+                            for segment in ('Hindfoot', 'Forefoot', 'Hallux'))
+    missing = sorted(set(required) - vars(owner).keys())
+    if missing:
+        raise ValueError('Calibration is incomplete; missing matrices: ' + ', '.join(missing))
     return vars(owner)
 
 
-def run_static_calibration(session_path, filename, testing_condition='BF', *, progress=print, qtm_sender=None, report_path=None):
+def run_static_calibration(session_path, filename, testing_condition='BF', *, progress=print,
+                           publish_qtm=False, qtm_sender=None, report_path=None):
     started = perf_counter()
     timings = {'engine_import': _import_seconds}
     commands = []
@@ -172,7 +191,7 @@ def run_static_calibration(session_path, filename, testing_condition='BF', *, pr
         stage(4, 'Anatomical systems and foot', calculate, calculations.compute_anatomical_systems_and_foot)
         stage(4, 'Transformation matrices and posture', calculate, calculations.compute_transforms_and_posture)
         stage(5, 'Transformation saving', calculations.save_transformation_matrices, state)
-        saved_parameters = _validate_calibration(staging)
+        saved_parameters = stage(5, 'Calibration validation', _validate_calibration, staging)
         stage(6, 'Modeled marker generation', calculations.generate_modeled_markers, state)
         if report_path is not None:
             if Path(report_path).suffix.lower() != '.pdf':
@@ -186,7 +205,11 @@ def run_static_calibration(session_path, filename, testing_condition='BF', *, pr
         os.replace(staging, destination)
     for warning in dict.fromkeys(warnings):
         progress('[warning] ' + warning)
-    errors = stage(6, 'QTM communication', write_qtm_outputs, commands, qtm_sender)
+    errors = []
+    if publish_qtm:
+        errors = stage(6, 'QTM communication', write_qtm_outputs, commands, qtm_sender)
+    else:
+        progress('[offline] QTM publishing skipped; local calibration saved and validated')
     timings['total'] = perf_counter() - started
     state['StaticDataFileName'] = destination
     state.pop('SetTrajectory', None)

@@ -1281,10 +1281,23 @@ class StaticAnalysisPage(QScrollArea):
             self,
             "Select Static Calibration Trial",
             start_dir or "",
-            "XML Files (*.xml)"
+            "Static calibration (*.c3d *.xml);;C3D Files (*.c3d);;XML Files (*.xml)"
         )
         if path:
-            self.set_session(path)
+            selected = Path(path).resolve()
+            if selected.suffix.lower() == '.c3d':
+                xml = selected.with_name('session.xml')
+                try:
+                    matches = [m for m in ET.parse(xml).getroot().iter('Measurement')
+                               if Path(m.get('Filename', '')).stem == selected.stem]
+                    if len(matches) != 1:
+                        raise ValueError('The selected C3D must match exactly one measurement in its session.xml.')
+                except (OSError, ET.ParseError, ValueError) as error:
+                    self._anthro_status(f'Cannot select static C3D: {error}', error=True)
+                    return
+                self.set_session(str(xml), filename=selected.name)
+            else:
+                self.set_session(path)
 
     # ═══════════════════════════════════════════════════════════════════
     #  Auto-Fetch Data from Static Trial & Session

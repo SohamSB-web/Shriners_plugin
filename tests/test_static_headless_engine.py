@@ -21,6 +21,13 @@ import static_calibration_calculations as calculations
 import static_trial
 
 
+@pytest.fixture(scope='module')
+def qapp():
+    os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
 @pytest.fixture
 def clinical_copy(tmp_path):
     source = os.environ.get('STATIC_REFERENCE_SESSION')
@@ -92,10 +99,13 @@ def test_saved_matrix_validation_checks_dimensions_and_finite_values(tmp_path):
     path.write_text('self.valueLeftEThighAnatRelTech = np.full((3, 3), np.nan)\n')
     with pytest.raises(ValueError, match='Invalid calibration matrix'):
         engine._validate_calibration(path)
+    path.write_text('self.valueLeftEThighAnatRelTech = np.eye(3)\n')
+    with pytest.raises(ValueError, match='incomplete; missing matrices'):
+        engine._validate_calibration(path)
 
 
 def test_original_math_calls_preserved_including_optional_foot_branches():
-    source = subprocess.check_output(['git', 'show', 'e6b06a1:Gait-lab-Vicon-to-QTM/Py3_StaticMain.py'], cwd=ROOT).decode('utf8')
+    source = subprocess.check_output(['git', 'show', 'origin/main:Gait-lab-Vicon-to-QTM/Py3_StaticMain.py'], cwd=ROOT).decode('utf8')
     tree = ast.parse(source)
     intervals = [(1314, 2480), (2739, 4099), (5480, 6416)]
     def calls(tree, intervals=None):
@@ -121,6 +131,18 @@ def test_static_loader_matches_original_point_and_metadata_values(clinical_copy,
                 np.testing.assert_array_equal(actual[key][axis], expected[key][axis])
         else:
             assert actual[key] == expected[key]
+
+
+def test_missing_c3d_subject_uses_selected_session_metadata(clinical_copy):
+    from ezc3d import c3d
+    import xml.etree.ElementTree as ET
+    folder, trial = clinical_copy
+    file = folder/Path(trial).with_suffix('.c3d')
+    reader = c3d(str(file))
+    reader['parameters']['PROCESSING']['Name']['value'] = []
+    reader.write(str(file))
+    expected = ET.parse(folder/'session.xml').getroot().findtext('Fields/Name')
+    assert static_trial.load_static_trial(folder/'session.xml', trial)['Name'] == expected
 
 
 def test_clinical_equivalence_and_modeled_marker_payloads(clinical_copy, tmp_path):
@@ -168,7 +190,7 @@ def test_clinical_equivalence_and_modeled_marker_payloads(clinical_copy, tmp_pat
 def test_qtm_failure_is_partial_success_and_pdf_remains_headless(clinical_copy, tmp_path):
     folder, trial = clinical_copy
     before = hashes(folder)
-    result = engine.run_static_calibration(folder / 'session.xml', trial, qtm_sender=lambda *args: None,
+    result = engine.run_static_calibration(folder / 'session.xml', trial, publish_qtm=True, qtm_sender=lambda *args: None,
                                          report_path=tmp_path / 'report.pdf')
     assert not result.success and result.qtm_errors[0]['remaining_commands'] > 0
     assert result.calibration_path.exists()
@@ -278,31 +300,13 @@ def test_cli_returns_complete_or_partial_status(monkeypatch, success, expected):
     assert entry.main(['--headless', '-s', 'session.xml', '-f', 'Static.qtm', '-t', 'BF']) == expected
 
 
-def test_existing_processing_service_keeps_ui_responsive(clinical_copy, tmp_path, monkeypatch):
-    """Run the actual service/subprocess interface with acknowledgements isolated from QTM."""
+def test_existing_processing_service_keeps_ui_responsive(clinical_copy, qapp):
+    """Actual production entry point, launcher and subprocess; no simulated QTM ACKs."""
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtWidgets import QApplication
     from app.services import processing_service
     app = QApplication.instance() or QApplication([])
-    wrapper = tmp_path / 'Py3_StaticMain.py'
-    wrapper.write_text(f'''import sys,runpy,builtins
-real_import=builtins.__import__
-def guarded(name,*a,**kw):
-    if name.startswith(('PySide6','tkinter','pyside6_compat')):
-        raise AssertionError('GUI import in backend: '+name)
-    return real_import(name,*a,**kw)
-builtins.__import__=guarded
-sys.path.insert(0,{str(BACKEND)!r})
-import static_calibration_engine as engine
-original=engine.run_static_calibration
-def offline(*a,**kw):
-    return original(*a,**dict(kw,qtm_sender=lambda *a:'offline regression acknowledgement'))
-engine.run_static_calibration=offline
-runpy.run_path({str(BACKEND/'Py3_StaticMain.py')!r},run_name='__main__')
-''', encoding='utf8')
-    monkeypatch.setattr(processing_service, '_GAIT_DIR', tmp_path)
-    monkeypatch.setattr(processing_service, '_resolve_python_launcher', lambda env: [sys.executable])
     service = processing_service.GaitProcessingService()
     results, logs, ticks = [], [], []
     service.processing_finished.connect(results.append)
@@ -330,3 +334,110 @@ runpy.run_path({str(BACKEND/'Py3_StaticMain.py')!r},run_name='__main__')
     assert results and results[0].completed, logs[-20:]
     assert len(ticks) >= 3
     assert all(any(f'[STAGE {stage}]' in line for line in logs) for stage in range(1,8))
+    assert not any('[STAGE 6] QTM communication' in line for line in logs)
+
+
+def test_real_cli_offline_without_gui_or_qtm_transport(clinical_copy, tmp_path):
+    folder, trial = clinical_copy
+    before = hashes(folder)
+    code = '''import builtins,sys,runpy
+real=builtins.__import__
+def guarded(name,*args,**kwargs):
+    if name.startswith(('gapi','grpc','Py3_Utils','Py3_varExtractor','PySide6','tkinter','pyside6_compat')):
+        raise AssertionError('Offline engine imported live/GUI dependency: '+name)
+    return real(name,*args,**kwargs)
+builtins.__import__=guarded
+sys.path.insert(0,sys.argv.pop(1))
+entry=sys.argv.pop(1)
+runpy.run_path(entry,run_name='__main__')
+'''
+    proc = subprocess.run([sys.executable, '-B', '-c', code, str(BACKEND), str(BACKEND/'Py3_StaticMain.py'),
+                           '-s', str(folder/'session.xml'), '-f', Path(trial).with_suffix('.c3d').name, '--headless'],
+                          cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert '[offline] QTM publishing skipped' in proc.stdout
+    assert '[STAGE 7]' in proc.stdout
+    assert hashes(folder) == before
+    log = Path(next(line.split(': ', 1)[1] for line in proc.stdout.splitlines() if line.startswith('[log]')))
+    assert '[STAGE 7]' in log.read_text(encoding='utf8')
+
+
+@pytest.mark.parametrize('failure', ['missing_c3d', 'invalid_c3d', 'output_is_file', 'invalid_frame', 'missing_body_mass'])
+def test_real_input_failures_preserve_calibration(clinical_copy, failure):
+    folder, trial = clinical_copy
+    calibration = next((folder/'Calibration').glob('Static_BF_*.py'))
+    if failure == 'missing_c3d':
+        (folder/Path(trial).with_suffix('.c3d')).rename(folder/'removed.c3d')
+    elif failure == 'invalid_c3d':
+        (folder/Path(trial).with_suffix('.c3d')).write_bytes(b'not a C3D file')
+    elif failure == 'output_is_file':
+        (folder/'Calibration').rename(folder/'preserved-calibration')
+        (folder/'Calibration').write_text('not a directory')
+        calibration = next((folder/'preserved-calibration').glob('Static_BF_*.py'))
+    else:
+        with calibration.open('a') as stream:
+            stream.write('\nself.valueStaticFrameNumber = 999999\n' if failure == 'invalid_frame'
+                         else '\nself.valueBodyMass = ""\n')
+    before = calibration.read_bytes()
+    with pytest.raises((OSError, ValueError)):
+        engine.run_static_calibration(folder/'session.xml', trial)
+    assert calibration.read_bytes() == before
+
+
+def test_production_static_page_browses_c3d_and_processes_offline(clinical_copy, monkeypatch, qapp):
+    from PySide6.QtCore import QEventLoop, QTimer, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QFileDialog
+    from app.ui.pages.static_analysis_page import StaticAnalysisPage
+    app = QApplication.instance() or QApplication([])
+    folder, trial = clinical_copy
+    before = hashes(folder)
+    page = StaticAnalysisPage()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *a: (str(folder/Path(trial).with_suffix('.c3d')), ''))
+    page._browse_static_file()
+    assert page._filename == Path(trial).with_suffix('.c3d').name
+    assert Path(page._session_path) == folder/'session.xml'
+    assert page._run_btn.isEnabled(), page._config_status.text()
+    results, logs, ticks = [], [], []
+    page._service.processing_finished.connect(results.append)
+    page._service.processing_log.connect(logs.append)
+    loop = QEventLoop()
+    heartbeat = QTimer()
+    heartbeat.setInterval(20)
+    def tick():
+        ticks.append(1)
+        if results and page._service._thread is None and page._stack.currentWidget() == page._completion_widget:
+            loop.quit()
+    heartbeat.timeout.connect(tick)
+    heartbeat.start()
+    timeout = QTimer()
+    timeout.setSingleShot(True)
+    timeout.timeout.connect(loop.quit)
+    timeout.start(20000)
+    QTest.mouseClick(page._run_btn, Qt.LeftButton)
+    loop.exec()
+    heartbeat.stop()
+    timeout.stop()
+    try:
+        assert results and results[0].completed, (page._config_status.text(), logs[-20:])
+        assert page._stack.currentWidget() == page._completion_widget
+        assert len(ticks) >= 3
+        assert any('[offline]' in line for line in logs)
+        assert hashes(folder) == before
+        engine._validate_calibration(next((folder/'Calibration').glob('Static_BF_*.py')))
+    finally:
+        if not results:
+            page._service.cancel()
+        page.close()
+
+
+def test_failed_cli_keeps_full_traceback_and_meaningful_error(tmp_path):
+    proc = subprocess.run([sys.executable, '-B', str(BACKEND/'Py3_StaticMain.py'),
+                           '-s', str(tmp_path/'missing.xml'), '-f', 'Static.c3d', '--headless'],
+                          capture_output=True, text=True, timeout=30, cwd=tmp_path)
+    assert proc.returncode == 1
+    assert 'missing.xml' in proc.stdout + proc.stderr
+    log = Path(next(line.split(': ', 1)[1] for line in proc.stdout.splitlines() if line.startswith('[log]')))
+    text = log.read_text(encoding='utf8')
+    assert 'Traceback (most recent call last)' in text
+    assert 'load_static_trial' in text and 'FileNotFoundError' in text
