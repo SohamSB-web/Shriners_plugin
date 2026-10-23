@@ -392,7 +392,7 @@ def test_processing_service_discards_cancelled_worker_output_and_can_restart(app
     assert len(events) == 2
 
 def test_headless_parameter_loading_uses_saved_local_values_and_explicit_units():
-    source = ROOT / 'Gait-lab-Vicon-to-QTM/Py3_StaticMain.py'
+    source = ROOT / 'Gait-lab-Vicon-to-QTM/static_calibration_parameters.py'
     tree = ast.parse(source.read_text(encoding='utf8'))
     getter = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'get_qtm_or_persisted')
     normalize = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'normalize_processing_measurements')
@@ -411,20 +411,15 @@ def test_headless_parameter_loading_uses_saved_local_values_and_explicit_units()
 
 def test_headless_patient_loading_preserves_reviewed_local_identity_and_dates():
     import datetime
-    source = ROOT / 'Gait-lab-Vicon-to-QTM/Py3_StaticMain.py'
+    source = ROOT / 'Gait-lab-Vicon-to-QTM/static_calibration_parameters.py'
     tree = ast.parse(source.read_text(encoding='utf8'))
-    patient = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'PatientInfo_Page')
-    build = next(n for n in patient.body if isinstance(n, ast.FunctionDef) and n.name == 'build_UI')
+    build = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'populate_clinical_inputs')
     start = next(i for i,n in enumerate(build.body) if isinstance(n, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id == 'local_saved' for t in n.targets))
     end = next(i for i,n in enumerate(build.body) if isinstance(n, ast.FunctionDef) and n.name == 'get_qtm_or_persisted')
-    class Value:
-        def __init__(self): self.value = 'XML value'
-        def insert(self, index, value): self.value = value
-        def set(self, value): self.value = value
     names = ['PatientNumber', 'FirstName', 'LastName', 'Date', 'Month', 'Year',
              'DataCollectionDate', 'DataCollectionMonth', 'DataCollectionYear']
-    ns = {name: Value() for name in names}
+    ns = {'inputs': {name: '' for name in names}}
     owner = SimpleNamespace(parent=SimpleNamespace(_headless=True), valueMeasurementUnits='m', valuePatientNumber='',
                             valueFirstName="O'Neil", valueLastName='Local last',
                             valueDateOfBirth_Day='09', valueDateOfBirth_Month='Sep', valueDateOfBirth_Year='2001',
@@ -433,55 +428,30 @@ def test_headless_patient_loading_preserves_reviewed_local_identity_and_dates():
               datetime=datetime, DateOptions=[f'{day:02d}' for day in range(1,32)],
               MonthOptions=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'])
     exec(compile(ast.Module(body=build.body[start:end],type_ignores=[]),str(source),'exec'),ns)
-    assert ns['PatientNumber'].value == '' and ns['FirstName'].value == "O'Neil"
-    assert [ns[name].value for name in ['Date','Month','Year']] == ['09','Sep','2001']
-    assert [ns[name].value for name in ['DataCollectionDate','DataCollectionMonth','DataCollectionYear']] == ['10','Oct','2026']
+    assert ns['inputs']['PatientNumber'] == '' and ns['inputs']['FirstName'] == "O'Neil"
+    assert [ns['inputs'][name] for name in ['Date','Month','Year']] == ['09','Sep','2001']
+    assert [ns['inputs'][name] for name in ['DataCollectionDate','DataCollectionMonth','DataCollectionYear']] == ['10','Oct','2026']
 
-@pytest.mark.parametrize('headless', [True, False])
 @pytest.mark.parametrize('saved_local', [True, False])
-def test_real_static_patient_page_builds_with_mode_owned_by_application(app, tmp_path, monkeypatch, headless, saved_local):
-    """Construct real Qt pages without starting the script's QTM/clinical entry point."""
-    import datetime
-    from PySide6.QtWidgets import QStackedWidget, QLineEdit
+def test_headless_patient_inputs_load_without_building_or_writing_widgets(tmp_path, monkeypatch, saved_local):
     monkeypatch.syspath_prepend(str(ROOT / 'Gait-lab-Vicon-to-QTM'))
-    from pyside6_compat import tk, ttk
-    source = ROOT / 'Gait-lab-Vicon-to-QTM/Py3_StaticMain.py'
-    tree = ast.parse(source.read_text(encoding='utf8'))
-    names = {'Static_Main', 'PatientInfo_Page', 'qtm_measurement_to_meters',
-             'persisted_measurement_to_meters', 'write_setting'}
-    definitions = [n for n in tree.body if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in names]
+    from static_calibration_parameters import populate_clinical_inputs
     calibration = tmp_path / 'Static_BF_Test.py'
     preferences = tmp_path / 'preferences.py'
     preferences.write_text("self.StaticForwardDirection = '+X'\n")
     if saved_local:
         calibration.write_text("self.StaticForwardDirection = '+X'\nself.valueMeasurementUnits = 'm'\n"
                                "self.valueHeight = '12.34567890123456'\nself.valueBodyMass = '72.1234567890123'\n")
-    # Other report pages are inert: constructing PatientInfo must not process or write trials.
-    class QA(tk.Frame): pass
-    class Report(tk.Frame): pass
-    ns = dict(tk=tk, ttk=ttk, QStackedWidget=QStackedWidget, datetime=datetime,
-              fields={'Name':'Test', 'ID':'test-id', 'Path':str(tmp_path), 'Filename':'Static',
-                      'First Frame':1, 'Last Frame':100, 'DOB':'2000-01-01',
-                      'Creation date':'2026-01-01', 'Height':.21, 'BodyMass':71},
-              StaticDataFileName=calibration, UserPreferencesFileName=preferences,
-              SittingFootStaticDataFileName=tmp_path/'unused.py',
-              TestingCondition='BF', DefaultTestingCondition='BF', MILLIMETERS_PER_METER=1000,
-              QAreport_Page=QA, StaticSubjectCalibrationReport_Page=Report,
-              Large_Font='Calibri 14', Small_Font='Calibri 12', Smaller_Font='Calibri 10', Bold_Small_Font='Calibri 12 bold')
-    exec(compile(ast.Module(body=definitions,type_ignores=[]),str(source),'exec'),ns)
+    state = dict(self=SimpleNamespace(),
+                 fields={'Name':'Test', 'ID':'test-id', 'Path':str(tmp_path), 'Filename':'Static',
+                         'First Frame':1, 'Last Frame':100, 'DOB':'2000-01-01',
+                         'Creation date':'2026-01-01', 'Height':.21, 'BodyMass':71},
+                 StaticDataFileName=calibration, UserPreferencesFileName=preferences,
+                 SittingFootStaticDataFileName=tmp_path/'unused.py',
+                 TestingCondition='BF', DefaultTestingCondition='BF')
     before = {p.name:p.read_bytes() for p in tmp_path.iterdir()}
-    root = ns['Static_Main'](headless=headless)
-    try:
-        page = root.frames[ns['PatientInfo_Page']]
-        assert page.parent is root and root._headless is headless
-        assert '_headless' not in page.__dict__
-        entries = [entry.text() for entry in page.findChildren(QLineEdit)]
-        assert ('12.34567890123456' if headless and saved_local else '0.21') in entries
-        expected_mass = '72.1234567890123' if headless and saved_local else '72.12' if saved_local else '71.0'
-        assert expected_mass in entries
-        page.build_UI()  # Rebuilding must retain the controller mode too.
-        assert {p.name:p.read_bytes() for p in tmp_path.iterdir()} == before
-    finally:
-        root.close()
-        root.deleteLater()
-        app.processEvents()
+    values = populate_clinical_inputs(state)
+    assert values['Height'] == ('12.34567890123456' if saved_local else '0.21')
+    assert values['BodyMass'] == ('72.1234567890123' if saved_local else '71.0')
+    assert populate_clinical_inputs(state) == values
+    assert {p.name:p.read_bytes() for p in tmp_path.iterdir()} == before

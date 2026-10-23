@@ -1,0 +1,3 @@
+from typing import Any
+
+def get_series(*args: Any, **kwargs: Any) -> Any: ...

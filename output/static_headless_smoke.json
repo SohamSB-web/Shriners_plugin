@@ -1,0 +1,119 @@
+{
+  "workload": "Static trial copies; offline QTM acknowledgements; medians of repeated child processes",
+  "reference_commit": "e6b06a1",
+  "logical_cpus": 12,
+  "repeats": 1,
+  "source_hashes_unchanged": true,
+  "summary": {
+    "legacy": {
+      "wall_seconds": 2.1314903,
+      "timings": {
+        "c3d_and_force_loading": 0.033195399999999875,
+        "startup_and_loading": 1.8379999,
+        "clinical_ui": 0.010288300000000028,
+        "qa": 0.006035100000000071,
+        "calculation": 0.021129199999999848,
+        "saving": 0.000989600000000035,
+        "markers": 0.010357900000000031,
+        "total": 1.9182636
+      },
+      "marker_error": "TypeError: can't multiply sequence by non-int of type 'float'",
+      "modeled_commands": 0
+    },
+    "legacy-normalized": {
+      "wall_seconds": 1.9742086999999997,
+      "timings": {
+        "c3d_and_force_loading": 0.02979200000000004,
+        "startup_and_loading": 1.6746032,
+        "clinical_ui": 0.008226700000000031,
+        "qa": 0.005429200000000023,
+        "calculation": 0.014986799999999967,
+        "saving": 0.0008955999999999964,
+        "markers": 0.0489139999999999,
+        "total": 1.7808522999999998
+      },
+      "marker_error": null,
+      "modeled_commands": 16
+    },
+    "engine": {
+      "wall_seconds": 1.1039778,
+      "timings": {
+        "engine_import": 0.5756268,
+        "C3D loading": 0.023582500000000062,
+        "Clinical parameters": 0.011294899999999997,
+        "Marker QA": 0.0010501000000000538,
+        "Calibration markers": 0.0013007000000000435,
+        "Joint centers and technical systems": 0.00040090000000003734,
+        "Anatomical systems and foot": 0.0005091999999999874,
+        "Transformation matrices and posture": 0.0003410999999999831,
+        "Transformation saving": 0.0007860000000000644,
+        "Modeled marker generation": 0.045699899999999904,
+        "QTM communication": 0.001754199999999928,
+        "total": 0.2310639,
+        "startup_and_loading": 0.7311301,
+        "process_total": 0.9622330000000001
+      },
+      "marker_error": null,
+      "modeled_commands": 16
+    }
+  },
+  "runs": [
+    {
+      "mode": "legacy",
+      "repeat": 1,
+      "wall_seconds": 2.1314903,
+      "timings": {
+        "c3d_and_force_loading": 0.033195399999999875,
+        "startup_and_loading": 1.8379999,
+        "clinical_ui": 0.010288300000000028,
+        "qa": 0.006035100000000071,
+        "calculation": 0.021129199999999848,
+        "saving": 0.000989600000000035,
+        "markers": 0.010357900000000031,
+        "total": 1.9182636
+      },
+      "marker_error": "TypeError: can't multiply sequence by non-int of type 'float'",
+      "modeled_commands": 0
+    },
+    {
+      "mode": "legacy-normalized",
+      "repeat": 1,
+      "wall_seconds": 1.9742086999999997,
+      "timings": {
+        "c3d_and_force_loading": 0.02979200000000004,
+        "startup_and_loading": 1.6746032,
+        "clinical_ui": 0.008226700000000031,
+        "qa": 0.005429200000000023,
+        "calculation": 0.014986799999999967,
+        "saving": 0.0008955999999999964,
+        "markers": 0.0489139999999999,
+        "total": 1.7808522999999998
+      },
+      "marker_error": null,
+      "modeled_commands": 16
+    },
+    {
+      "mode": "engine",
+      "repeat": 1,
+      "wall_seconds": 1.1039778,
+      "timings": {
+        "engine_import": 0.5756268,
+        "C3D loading": 0.023582500000000062,
+        "Clinical parameters": 0.011294899999999997,
+        "Marker QA": 0.0010501000000000538,
+        "Calibration markers": 0.0013007000000000435,
+        "Joint centers and technical systems": 0.00040090000000003734,
+        "Anatomical systems and foot": 0.0005091999999999874,
+        "Transformation matrices and posture": 0.0003410999999999831,
+        "Transformation saving": 0.0007860000000000644,
+        "Modeled marker generation": 0.045699899999999904,
+        "QTM communication": 0.001754199999999928,
+        "total": 0.2310639,
+        "startup_and_loading": 0.7311301,
+        "process_total": 0.9622330000000001
+      },
+      "marker_error": null,
+      "modeled_commands": 16
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+# ViconNexus.py Functions and Classes Checklist
+
+**Total Classes Found:** 2
+**Total Functions/Methods Found:** 72
+
+## ViconNexusException (Class)
+- [ ] **ViconNexusException**
+  - [ ] `__init__()`
+  - [ ] `__str__()`
+
+## ViconNexus (Class)
+- [ ] **ViconNexus**
+  - [ ] `__init__()`
+  - [ ] `__str__()`
+  - [ ] `_get_safe_string_value()`
+  - [ ] `__init__()`
+  - [ ] `Connect()`
+  - [ ] `Disconnect()`
+  - [ ] `IsConnected()`
+  - [ ] `GetServerInfo()`
+  - [ ] `GetFrameCount()`
+  - [ ] `GetFrameRate()`
+  - [ ] `GetTrialRange()`
+  - [ ] `GetTrialRegionOfInterest()`
+  - [ ] `SetTrialRegionOfInterest()`
+  - [ ] `GetTrialName()`
+  - [ ] `GetSubjectNames()`
+  - [ ] `GetSubjectInfo()`
+  - [ ] `SetSubjectActive()`
+  - [ ] `GetMarkerNames()`
+  - [ ] `GetSegmentNames()`
+  - [ ] `GetRootSegment()`
+  - [ ] `GetSegmentDetails()`
+  - [ ] `GetJointNames()`
+  - [ ] `GetJointDetails()`
+  - [ ] `GetModelOutputNames()`
+  - [ ] `GetModelOutputDetails()`
+  - [ ] `GetAnalysisParamNames()`
+  - [ ] `GetAnalysisParamDetails()`
+  - [ ] `GetAnalysisParam()`
+  - [ ] `SetAnalysisParam()`
+  - [ ] `CreateAnalysisParam()`
+  - [ ] `GetSubjectParamNames()`
+  - [ ] `GetSubjectParamDetails()`
+  - [ ] `GetSubjectParam()`
+  - [ ] `SetSubjectParam()`
+  - [ ] `CreateSubjectParam()`
+  - [ ] `GetUnlabeledCount()`
+  - [ ] `GetUnlabeled()`
+  - [ ] `HasTrajectory()`
+  - [ ] `GetTrajectory()`
+  - [ ] `SetTrajectory()`
+  - [ ] `GetTrajectoryAtFrame()`
+  - [ ] `SetTrajectoryAtFrame()`
+  - [ ] `GetModelOutput()`
+  - [ ] `SetModelOutput()`
+  - [ ] `GetModelOutputAtFrame()`
+  - [ ] `SetModelOutputAtFrame()`
+  - [ ] `CreateModelOutput()`
+  - [ ] `CreateModeledMarker()`
+  - [ ] `ClearAllEvents()`
+  - [ ] `GetEvents()`
+  - [ ] `CreateAnEvent()`
+  - [ ] `RunPipeline()`
+  - [ ] `OpenTrial()`
+  - [ ] `SaveTrial()`
+  - [ ] `CloseTrial()`
+  - [ ] `GetDeviceIDs()`
+  - [ ] `GetDeviceNames()`
+  - [ ] `GetDeviceIDFromName()`
+  - [ ] `GetDeviceDetails()`
+  - [ ] `GetDeviceOutputIDFromName()`
+  - [ ] `GetDeviceChannelIDFromName()`
+  - [ ] `GetDeviceOutputDetails()`
+  - [ ] `GetDeviceChannel()`
+  - [ ] `GetDeviceChannelAtFrame()`
+  - [ ] `GetDeviceChannelForFrame()`
+  - [ ] `GetDeviceChannelGlobal()`
+  - [ ] `GetDeviceChannelGlobalAtFrame()`
+  - [ ] `GetDeviceChannelGlobalForFrame()`
+  - [ ] `SetDeviceChannel()`
+  - [ ] `SetDeviceChannelAtFrame()`
+  - [ ] `SubmitSplineTrajectory()`
+  - [ ] `GetSplineResults()`
+
