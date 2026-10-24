@@ -86,14 +86,29 @@ parser.add_argument(
 parser.add_argument(
     "--interactiveFP", action="store_true", default=False, help="Always show interactive ForcePlateGUI"
 )
+parser.add_argument("--run-id", default=None, help="Numerical batch artifact identity")
 args = parser.parse_args()
 # Use the parsed arguments
 TestingCondition = args.TestingCondition   #  "BF"
 sessionPath = args.sessionPath
 filename = args.filename   #  "Dynamic 1.qtm"
 
+import gapi
+from app.services.dynamic_write_manifest import trial_output_lock
+_output_lock = trial_output_lock(Path(sessionPath).resolve().parent, filename)
+_output_lock.__enter__()
+import atexit
+atexit.register(lambda: _output_lock.__exit__(None, None, None))
+_write_manifest = gapi.begin_local_dynamic(Path(sessionPath).resolve().parent, filename, args.run_id)
 
 fields = extract_fields_by_filename(sessionPath, filename,False)
+
+
+def SetTrajectory(subject, name, x, y, z, exists, start, end, offset=None):
+    # Reconstructions must be readable by later stages without a QTM write/read round trip.
+    fields[name] = {"X": x, "Y": y, "Z": z, "Exists": exists}
+    gapi.SetTrajectory(name, x, y, z, exists, start, end,
+                       fields["initial_frame_offset"] if offset is None else offset)
 
 
 SubjectName = fields["Name"]
@@ -116,6 +131,8 @@ class Dynamic_Main:
     def __init__(self):
         print("[DynamicMain] __init__ step 1: SimModlOutput", flush=True)
         self.Models = SimModlOutput()
+        self.Models.trajectory_offset = fields["initial_frame_offset"]
+        _write_manifest.bind_inputs(StaticDataFileName)
 
         # =============================================================================
         #       Create ASIS Markers if Pelfix Option was used
@@ -238,75 +255,25 @@ class Dynamic_Main:
             arrayRASISMarkerZ = [0 for m in range(framecount)]
             exists = [True] * framecount
 
-            for FrameNumber in range(StartFrame, EndFrame):
-                # Compute Pelvis Tech Coordinates
-                if self.valuePelvicFixCheck == "1":
-                    # Pelvis Technical coordinate system based on LILC, RILC, SACR
-                    LeftIliacMarker = np.array(
-                        [
-                            LeftIliacMarkerX[FrameNumber],
-                            LeftIliacMarkerY[FrameNumber],
-                            LeftIliacMarkerZ[FrameNumber],
-                        ]
-                    )
-                    RightIliacMarker = np.array(
-                        [
-                            RightIliacMarkerX[FrameNumber],
-                            RightIliacMarkerY[FrameNumber],
-                            RightIliacMarkerZ[FrameNumber],
-                        ]
-                    )
-                    SacralMarker = np.array(
-                        [
-                            SacralMarkerX[FrameNumber],
-                            SacralMarkerY[FrameNumber],
-                            SacralMarkerZ[FrameNumber],
-                        ]
-                    )
-                    [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(
-                        LeftIliacMarker, RightIliacMarker, SacralMarker
-                    )
-
-                if self.valuePelvicFixCheck == "2":  # Pelvic Triad Option
-                    # Pelvis Technical coordinate system based on LPSI, RPSI, SACT
-                    LeftPSISMarker = np.array(
-                        [
-                            LeftPSISMarkerX[FrameNumber],
-                            LeftPSISMarkerY[FrameNumber],
-                            LeftPSISMarkerZ[FrameNumber],
-                        ]
-                    )
-                    RightPSISMarker = np.array(
-                        [
-                            RightPSISMarkerX[FrameNumber],
-                            RightPSISMarkerY[FrameNumber],
-                            RightPSISMarkerZ[FrameNumber],
-                        ]
-                    )
-                    SacralTriadMarker = np.array(
-                        [
-                            SacralTriadMarkerX[FrameNumber],
-                            SacralTriadMarkerY[FrameNumber],
-                            SacralTriadMarkerZ[FrameNumber],
-                        ]
-                    )
-                    [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(
-                        LeftPSISMarker, RightPSISMarker, SacralTriadMarker
-                    )
-
-                LeftASISMarkerLab = math.TransformPointIntoLabCoors(
-                    self.valueLeftASISMarkerPelvis, EPelvisTech, MidASISLab
-                )
-                RightASISMarkerLab = math.TransformPointIntoLabCoors(
-                    self.valueRightASISMarkerPelvis, EPelvisTech, MidASISLab
-                )
-
-                arrayLASISMarkerX[FrameNumber] = LeftASISMarkerLab[0]
-                arrayLASISMarkerY[FrameNumber] = LeftASISMarkerLab[1]
-                arrayLASISMarkerZ[FrameNumber] = LeftASISMarkerLab[2]
-                arrayRASISMarkerX[FrameNumber] = RightASISMarkerLab[0]
-                arrayRASISMarkerY[FrameNumber] = RightASISMarkerLab[1]
-                arrayRASISMarkerZ[FrameNumber] = RightASISMarkerLab[2]
+            active = slice(StartFrame, EndFrame)
+            if self.valuePelvicFixCheck == "1":
+                LeftPelvicMarkers = np.column_stack((LeftIliacMarkerX, LeftIliacMarkerY, LeftIliacMarkerZ))[active]
+                RightPelvicMarkers = np.column_stack((RightIliacMarkerX, RightIliacMarkerY, RightIliacMarkerZ))[active]
+                PosteriorPelvicMarkers = np.column_stack((SacralMarkerX, SacralMarkerY, SacralMarkerZ))[active]
+            if self.valuePelvicFixCheck == "2":
+                LeftPelvicMarkers = np.column_stack((LeftPSISMarkerX, LeftPSISMarkerY, LeftPSISMarkerZ))[active]
+                RightPelvicMarkers = np.column_stack((RightPSISMarkerX, RightPSISMarkerY, RightPSISMarkerZ))[active]
+                PosteriorPelvicMarkers = np.column_stack((SacralTriadMarkerX, SacralTriadMarkerY, SacralTriadMarkerZ))[active]
+            EPelvisTech, MidASISLab = gait.TechCS_Pelvis_Newington(
+                LeftPelvicMarkers, RightPelvicMarkers, PosteriorPelvicMarkers)
+            reconstructed_left = np.zeros((framecount, 3))
+            reconstructed_right = np.zeros((framecount, 3))
+            reconstructed_left[active] = math.TransformPointIntoLabCoors(
+                self.valueLeftASISMarkerPelvis, EPelvisTech, MidASISLab)
+            reconstructed_right[active] = math.TransformPointIntoLabCoors(
+                self.valueRightASISMarkerPelvis, EPelvisTech, MidASISLab)
+            arrayLASISMarkerX, arrayLASISMarkerY, arrayLASISMarkerZ = reconstructed_left.T.tolist()
+            arrayRASISMarkerX, arrayRASISMarkerY, arrayRASISMarkerZ = reconstructed_right.T.tolist()
 
             SetTrajectory(
                 SubjectName,
@@ -396,84 +363,43 @@ class Dynamic_Main:
 
         exists = [True] * framecount
 
-        for FrameNumber in range(StartFrame, EndFrame):
-            # Compute Technical Coordinate System: Left Foot Segments
-            if self.valueLeftFootModelCheck == "1":
-                # print FrameNumber
-                # print LeftFirstMetarsalBaseMarkerX
-                LeftFirstMetarsalBaseMarker = np.array(
-                    [
-                        LeftFirstMetarsalBaseMarkerX[FrameNumber],
-                        LeftFirstMetarsalBaseMarkerY[FrameNumber],
-                        LeftFirstMetarsalBaseMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftFirstMetarsalHeadMarker = np.array(
-                    [
-                        LeftFirstMetarsalHeadMarkerX[FrameNumber],
-                        LeftFirstMetarsalHeadMarkerY[FrameNumber],
-                        LeftFirstMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftFifthMetarsalHeadMarker = np.array(
-                    [
-                        LeftFifthMetarsalHeadMarkerX[FrameNumber],
-                        LeftFifthMetarsalHeadMarkerY[FrameNumber],
-                        LeftFifthMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftEForefootTech = gait.TechCS_Forefoot_mSHCG(
-                    "Left",
-                    LeftFirstMetarsalBaseMarker,
-                    LeftFirstMetarsalHeadMarker,
-                    LeftFifthMetarsalHeadMarker,
-                )
-                LeftMT23HMarkerLab = math.TransformPointIntoLabCoors(
-                    self.valueLeft23MetatarsalHeadMarkerForefoot,
-                    LeftEForefootTech,
-                    LeftFirstMetarsalBaseMarker,
-                )
-                arrayLMT23HMarkerX[FrameNumber] = LeftMT23HMarkerLab[0]
-                arrayLMT23HMarkerY[FrameNumber] = LeftMT23HMarkerLab[1]
-                arrayLMT23HMarkerZ[FrameNumber] = LeftMT23HMarkerLab[2]
-
-            # Compute Technical Coordinate System: Right Foot Segments
-            if self.valueRightFootModelCheck == "1":
-                RightFirstMetarsalBaseMarker = np.array(
-                    [
-                        RightFirstMetarsalBaseMarkerX[FrameNumber],
-                        RightFirstMetarsalBaseMarkerY[FrameNumber],
-                        RightFirstMetarsalBaseMarkerZ[FrameNumber],
-                    ]
-                )
-                RightFirstMetarsalHeadMarker = np.array(
-                    [
-                        RightFirstMetarsalHeadMarkerX[FrameNumber],
-                        RightFirstMetarsalHeadMarkerY[FrameNumber],
-                        RightFirstMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                RightFifthMetarsalHeadMarker = np.array(
-                    [
-                        RightFifthMetarsalHeadMarkerX[FrameNumber],
-                        RightFifthMetarsalHeadMarkerY[FrameNumber],
-                        RightFifthMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                RightEForefootTech = gait.TechCS_Forefoot_mSHCG(
-                    "Right",
-                    RightFirstMetarsalBaseMarker,
-                    RightFirstMetarsalHeadMarker,
-                    RightFifthMetarsalHeadMarker,
-                )
-                RightMT23HMarkerLab = math.TransformPointIntoLabCoors(
-                    self.valueRight23MetatarsalHeadMarkerForefoot,
-                    RightEForefootTech,
-                    RightFirstMetarsalBaseMarker,
-                )
-                arrayRMT23HMarkerX[FrameNumber] = RightMT23HMarkerLab[0]
-                arrayRMT23HMarkerY[FrameNumber] = RightMT23HMarkerLab[1]
-                arrayRMT23HMarkerZ[FrameNumber] = RightMT23HMarkerLab[2]
+        active = slice(StartFrame, EndFrame)
+        if self.valueLeftFootModelCheck == "1":
+            base = (
+                np.column_stack((LeftFirstMetarsalBaseMarkerX, LeftFirstMetarsalBaseMarkerY,
+                LeftFirstMetarsalBaseMarkerZ))[active]
+            )
+            head = (
+                np.column_stack((LeftFirstMetarsalHeadMarkerX, LeftFirstMetarsalHeadMarkerY,
+                LeftFirstMetarsalHeadMarkerZ))[active]
+            )
+            lateral = (
+                np.column_stack((LeftFifthMetarsalHeadMarkerX, LeftFifthMetarsalHeadMarkerY,
+                LeftFifthMetarsalHeadMarkerZ))[active]
+            )
+            forefoot = gait.TechCS_Forefoot_mSHCG("Left", base, head, lateral)
+            reconstructed = np.zeros((framecount, 3))
+            reconstructed[active] = math.TransformPointIntoLabCoors(
+                self.valueLeft23MetatarsalHeadMarkerForefoot, forefoot, base)
+            arrayLMT23HMarkerX, arrayLMT23HMarkerY, arrayLMT23HMarkerZ = reconstructed.T.tolist()
+        if self.valueRightFootModelCheck == "1":
+            base = (
+                np.column_stack((RightFirstMetarsalBaseMarkerX, RightFirstMetarsalBaseMarkerY,
+                RightFirstMetarsalBaseMarkerZ))[active]
+            )
+            head = (
+                np.column_stack((RightFirstMetarsalHeadMarkerX, RightFirstMetarsalHeadMarkerY,
+                RightFirstMetarsalHeadMarkerZ))[active]
+            )
+            lateral = (
+                np.column_stack((RightFifthMetarsalHeadMarkerX, RightFifthMetarsalHeadMarkerY,
+                RightFifthMetarsalHeadMarkerZ))[active]
+            )
+            forefoot = gait.TechCS_Forefoot_mSHCG("Right", base, head, lateral)
+            reconstructed = np.zeros((framecount, 3))
+            reconstructed[active] = math.TransformPointIntoLabCoors(
+                self.valueRight23MetatarsalHeadMarkerForefoot, forefoot, base)
+            arrayRMT23HMarkerX, arrayRMT23HMarkerY, arrayRMT23HMarkerZ = reconstructed.T.tolist()
 
         if self.valueLeftFootModelCheck == "1":
             SetTrajectory(
@@ -576,16 +502,10 @@ class Dynamic_Main:
             SacralMarkerX = [0 for m in range(framecount)]
             SacralMarkerY = [0 for m in range(framecount)]
             SacralMarkerZ = [0 for m in range(framecount)]
-            for FrameNumber in range(StartFrame, EndFrame):
-                SacralMarkerX[FrameNumber] = (
-                    LeftPSISMarkerX[FrameNumber] + RightPSISMarkerX[FrameNumber]
-                ) / 2
-                SacralMarkerY[FrameNumber] = (
-                    LeftPSISMarkerY[FrameNumber] + RightPSISMarkerY[FrameNumber]
-                ) / 2
-                SacralMarkerZ[FrameNumber] = (
-                    LeftPSISMarkerZ[FrameNumber] + RightPSISMarkerZ[FrameNumber]
-                ) / 2
+            active = slice(StartFrame, EndFrame)
+            SacralMarkerX[active] = (np.asarray(LeftPSISMarkerX)[active] + np.asarray(RightPSISMarkerX)[active]) / 2
+            SacralMarkerY[active] = (np.asarray(LeftPSISMarkerY)[active] + np.asarray(RightPSISMarkerY)[active]) / 2
+            SacralMarkerZ[active] = (np.asarray(LeftPSISMarkerZ)[active] + np.asarray(RightPSISMarkerZ)[active]) / 2
         LeftASISMarkerX, LeftASISMarkerY, LeftASISMarkerZ, LeftASISMarkerExists = (
             MarkerArrayCheck(SubjectName, self.LeftASISMarkerName)
         )
@@ -810,13 +730,8 @@ class Dynamic_Main:
         #      Check for Medial Ankle marker drop-off
         # =============================================================================
         framecount = fields["Frames"]
-        LeftMedialAnkleMarkerDropOff = 0
-        RightMedialAnkleMarkerDropOff = 0
-        for FrameNumber in range(StartFrame, EndFrame):
-            if LeftMedialAnkleMarkerZ[FrameNumber] == 0:
-                LeftMedialAnkleMarkerDropOff = 1
-            if RightMedialAnkleMarkerZ[FrameNumber] == 0:
-                RightMedialAnkleMarkerDropOff = 1
+        LeftMedialAnkleMarkerDropOff = int(np.any(np.asarray(LeftMedialAnkleMarkerZ)[StartFrame:EndFrame] == 0))
+        RightMedialAnkleMarkerDropOff = int(np.any(np.asarray(RightMedialAnkleMarkerZ)[StartFrame:EndFrame] == 0))
 
         # =============================================================================
         #      Determine Walking Direction and lab coordinate system
@@ -1328,2865 +1243,1391 @@ class Dynamic_Main:
             "Calcaneus",
         ]
 
-        # for FrameNumber in xrange(framecount):
-        print(f"[DynamicMain] __init__ step 6: Starting frame loop from {StartFrame} to {EndFrame}...", flush=True)
-        for FrameNumber in range(StartFrame, EndFrame):
-            if FrameNumber % 50 == 0 or FrameNumber >= 300:
-                print(f"[DynamicMain] Frame {FrameNumber}/{EndFrame}...", flush=True)
-            # Transform marker data if necessary based on direction that the patient is walking
-            C7Marker = np.array(
-                [
-                    Direction * C7MarkerX[FrameNumber],
-                    Direction * C7MarkerY[FrameNumber],
-                    C7MarkerZ[FrameNumber],
-                ]
-            )
-            LeftClavicleMarker = np.array(
-                [
-                    Direction * LeftClavicleMarkerX[FrameNumber],
-                    Direction * LeftClavicleMarkerY[FrameNumber],
-                    LeftClavicleMarkerZ[FrameNumber],
-                ]
-            )
-            RightClavicleMarker = np.array(
-                [
-                    Direction * RightClavicleMarkerX[FrameNumber],
-                    Direction * RightClavicleMarkerY[FrameNumber],
-                    RightClavicleMarkerZ[FrameNumber],
-                ]
-            )
-            SacralMarker = np.array(
-                [
-                    Direction * SacralMarkerX[FrameNumber],
-                    Direction * SacralMarkerY[FrameNumber],
-                    SacralMarkerZ[FrameNumber],
-                ]
-            )
-            LeftASISMarker = np.array(
-                [
-                    Direction * LeftASISMarkerX[FrameNumber],
-                    Direction * LeftASISMarkerY[FrameNumber],
-                    LeftASISMarkerZ[FrameNumber],
-                ]
-            )
-            LeftThighMarker = np.array(
-                [
-                    Direction * LeftThighMarkerX[FrameNumber],
-                    Direction * LeftThighMarkerY[FrameNumber],
-                    LeftThighMarkerZ[FrameNumber],
-                ]
-            )
-            LeftLateralKneeMarker = np.array(
-                [
-                    Direction * LeftLateralKneeMarkerX[FrameNumber],
-                    Direction * LeftLateralKneeMarkerY[FrameNumber],
-                    LeftLateralKneeMarkerZ[FrameNumber],
-                ]
-            )
-            LeftTibialMarker = np.array(
-                [
-                    Direction * LeftTibialMarkerX[FrameNumber],
-                    Direction * LeftTibialMarkerY[FrameNumber],
-                    LeftTibialMarkerZ[FrameNumber],
-                ]
-            )
-            if LeftTibialTriadCheck is True:
-                LeftTibialUpperMarker = np.array(
-                    [
-                        Direction * LeftTibialUpperMarkerX[FrameNumber],
-                        Direction * LeftTibialUpperMarkerY[FrameNumber],
-                        LeftTibialUpperMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftTibialLowerMarker = np.array(
-                    [
-                        Direction * LeftTibialLowerMarkerX[FrameNumber],
-                        Direction * LeftTibialLowerMarkerY[FrameNumber],
-                        LeftTibialLowerMarkerZ[FrameNumber],
-                    ]
-                )
-            LeftLateralAnkleMarker = np.array(
-                [
-                    Direction * LeftLateralAnkleMarkerX[FrameNumber],
-                    Direction * LeftLateralAnkleMarkerY[FrameNumber],
-                    LeftLateralAnkleMarkerZ[FrameNumber],
-                ]
-            )
-            LeftToeMarker = np.array(
-                [
-                    Direction * LeftToeMarkerX[FrameNumber],
-                    Direction * LeftToeMarkerY[FrameNumber],
-                    LeftToeMarkerZ[FrameNumber],
-                ]
-            )
-            LeftMedialAnkleMarker = np.array(
-                [
-                    Direction * LeftMedialAnkleMarkerX[FrameNumber],
-                    Direction * LeftMedialAnkleMarkerY[FrameNumber],
-                    LeftMedialAnkleMarkerZ[FrameNumber],
-                ]
-            )
-            LeftHeelMarker = np.array(
-                [
-                    Direction * LeftHeelMarkerX[FrameNumber],
-                    Direction * LeftHeelMarkerY[FrameNumber],
-                    LeftHeelMarkerZ[FrameNumber],
-                ]
-            )
-            if self.valueLeftFootModelCheck == "1":
-                LeftLateralCalcaneusMarker = np.array(
-                    [
-                        Direction * LeftLateralCalcaneusMarkerX[FrameNumber],
-                        Direction * LeftLateralCalcaneusMarkerY[FrameNumber],
-                        LeftLateralCalcaneusMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftMedialCalcaneusMarker = np.array(
-                    [
-                        Direction * LeftMedialCalcaneusMarkerX[FrameNumber],
-                        Direction * LeftMedialCalcaneusMarkerY[FrameNumber],
-                        LeftMedialCalcaneusMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftPosteriorCalcaneusMarker = np.array(
-                    [
-                        Direction * LeftPosteriorCalcaneusMarkerX[FrameNumber],
-                        Direction * LeftPosteriorCalcaneusMarkerY[FrameNumber],
-                        LeftPosteriorCalcaneusMarkerZ[FrameNumber],
-                    ]
-                )
-
-                # Computer MTP1 Marker
-                LeftFirstMetarsalBaseMarker = np.array(
-                    [
-                        LeftFirstMetarsalBaseMarkerX[FrameNumber],
-                        LeftFirstMetarsalBaseMarkerY[FrameNumber],
-                        LeftFirstMetarsalBaseMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftFirstMetarsalHeadMarker = np.array(
-                    [
-                        LeftFirstMetarsalHeadMarkerX[FrameNumber],
-                        LeftFirstMetarsalHeadMarkerY[FrameNumber],
-                        LeftFirstMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftFifthMetarsalHeadMarker = np.array(
-                    [
-                        LeftFifthMetarsalHeadMarkerX[FrameNumber],
-                        LeftFifthMetarsalHeadMarkerY[FrameNumber],
-                        LeftFifthMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftEForefootTech = gait.TechCS_Forefoot_mSHCG(
-                    "Left",
-                    LeftFirstMetarsalBaseMarker,
-                    LeftFirstMetarsalHeadMarker,
-                    LeftFifthMetarsalHeadMarker,
-                )
-                LeftMTP1MarkerLab = math.TransformPointIntoLabCoors(
-                    self.valueLeftFirstMetatarsoPhalangealJointMarkerForefoot,
-                    LeftEForefootTech,
-                    LeftFirstMetarsalBaseMarker,
-                )
-                LeftFirstMetatarsoPhalangealJointMarker = np.array(
-                    [
-                        Direction * LeftMTP1MarkerLab[0],
-                        Direction * LeftMTP1MarkerLab[1],
-                        LeftMTP1MarkerLab[2],
-                    ]
-                )
-
-                LeftFirstMetarsalBaseMarker = np.array(
-                    [
-                        Direction * LeftFirstMetarsalBaseMarkerX[FrameNumber],
-                        Direction * LeftFirstMetarsalBaseMarkerY[FrameNumber],
-                        LeftFirstMetarsalBaseMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftFirstMetarsalHeadMarker = np.array(
-                    [
-                        Direction * LeftFirstMetarsalHeadMarkerX[FrameNumber],
-                        Direction * LeftFirstMetarsalHeadMarkerY[FrameNumber],
-                        LeftFirstMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftFifthMetarsalHeadMarker = np.array(
-                    [
-                        Direction * LeftFifthMetarsalHeadMarkerX[FrameNumber],
-                        Direction * LeftFifthMetarsalHeadMarkerY[FrameNumber],
-                        LeftFifthMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftHalluxMarker = np.array(
-                    [
-                        Direction * LeftHalluxMarkerX[FrameNumber],
-                        Direction * LeftHalluxMarkerY[FrameNumber],
-                        LeftHalluxMarkerZ[FrameNumber],
-                    ]
-                )
-            RightASISMarker = np.array(
-                [
-                    Direction * RightASISMarkerX[FrameNumber],
-                    Direction * RightASISMarkerY[FrameNumber],
-                    RightASISMarkerZ[FrameNumber],
-                ]
-            )
-            RightThighMarker = np.array(
-                [
-                    Direction * RightThighMarkerX[FrameNumber],
-                    Direction * RightThighMarkerY[FrameNumber],
-                    RightThighMarkerZ[FrameNumber],
-                ]
-            )
-            RightLateralKneeMarker = np.array(
-                [
-                    Direction * RightLateralKneeMarkerX[FrameNumber],
-                    Direction * RightLateralKneeMarkerY[FrameNumber],
-                    RightLateralKneeMarkerZ[FrameNumber],
-                ]
-            )
-            RightTibialMarker = np.array(
-                [
-                    Direction * RightTibialMarkerX[FrameNumber],
-                    Direction * RightTibialMarkerY[FrameNumber],
-                    RightTibialMarkerZ[FrameNumber],
-                ]
-            )
-            if RightTibialTriadCheck is True:
-                RightTibialUpperMarker = np.array(
-                    [
-                        Direction * RightTibialUpperMarkerX[FrameNumber],
-                        Direction * RightTibialUpperMarkerY[FrameNumber],
-                        RightTibialUpperMarkerZ[FrameNumber],
-                    ]
-                )
-                RightTibialLowerMarker = np.array(
-                    [
-                        Direction * RightTibialLowerMarkerX[FrameNumber],
-                        Direction * RightTibialLowerMarkerY[FrameNumber],
-                        RightTibialLowerMarkerZ[FrameNumber],
-                    ]
-                )
-            RightLateralAnkleMarker = np.array(
-                [
-                    Direction * RightLateralAnkleMarkerX[FrameNumber],
-                    Direction * RightLateralAnkleMarkerY[FrameNumber],
-                    RightLateralAnkleMarkerZ[FrameNumber],
-                ]
-            )
-            RightToeMarker = np.array(
-                [
-                    Direction * RightToeMarkerX[FrameNumber],
-                    Direction * RightToeMarkerY[FrameNumber],
-                    RightToeMarkerZ[FrameNumber],
-                ]
-            )
-            RightMedialAnkleMarker = np.array(
-                [
-                    Direction * RightMedialAnkleMarkerX[FrameNumber],
-                    Direction * RightMedialAnkleMarkerY[FrameNumber],
-                    RightMedialAnkleMarkerZ[FrameNumber],
-                ]
-            )
-            RightHeelMarker = np.array(
-                [
-                    Direction * RightHeelMarkerX[FrameNumber],
-                    Direction * RightHeelMarkerY[FrameNumber],
-                    RightHeelMarkerZ[FrameNumber],
-                ]
-            )
-            if self.valueRightFootModelCheck == "1":
-                RightLateralCalcaneusMarker = np.array(
-                    [
-                        Direction * RightLateralCalcaneusMarkerX[FrameNumber],
-                        Direction * RightLateralCalcaneusMarkerY[FrameNumber],
-                        RightLateralCalcaneusMarkerZ[FrameNumber],
-                    ]
-                )
-                RightMedialCalcaneusMarker = np.array(
-                    [
-                        Direction * RightMedialCalcaneusMarkerX[FrameNumber],
-                        Direction * RightMedialCalcaneusMarkerY[FrameNumber],
-                        RightMedialCalcaneusMarkerZ[FrameNumber],
-                    ]
-                )
-                RightPosteriorCalcaneusMarker = np.array(
-                    [
-                        Direction * RightPosteriorCalcaneusMarkerX[FrameNumber],
-                        Direction * RightPosteriorCalcaneusMarkerY[FrameNumber],
-                        RightPosteriorCalcaneusMarkerZ[FrameNumber],
-                    ]
-                )
-
-                # Computer MTP1 Marker
-                RightFirstMetarsalBaseMarker = np.array(
-                    [
-                        RightFirstMetarsalBaseMarkerX[FrameNumber],
-                        RightFirstMetarsalBaseMarkerY[FrameNumber],
-                        RightFirstMetarsalBaseMarkerZ[FrameNumber],
-                    ]
-                )
-                RightFirstMetarsalHeadMarker = np.array(
-                    [
-                        RightFirstMetarsalHeadMarkerX[FrameNumber],
-                        RightFirstMetarsalHeadMarkerY[FrameNumber],
-                        RightFirstMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                RightFifthMetarsalHeadMarker = np.array(
-                    [
-                        RightFifthMetarsalHeadMarkerX[FrameNumber],
-                        RightFifthMetarsalHeadMarkerY[FrameNumber],
-                        RightFifthMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                RightEForefootTech = gait.TechCS_Forefoot_mSHCG(
-                    "Right",
-                    RightFirstMetarsalBaseMarker,
-                    RightFirstMetarsalHeadMarker,
-                    RightFifthMetarsalHeadMarker,
-                )
-                RightMTP1MarkerLab = math.TransformPointIntoLabCoors(
-                    self.valueRightFirstMetatarsoPhalangealJointMarkerForefoot,
-                    RightEForefootTech,
-                    RightFirstMetarsalBaseMarker,
-                )
-                RightFirstMetatarsoPhalangealJointMarker = np.array(
-                    [
-                        Direction * RightMTP1MarkerLab[0],
-                        Direction * RightMTP1MarkerLab[1],
-                        RightMTP1MarkerLab[2],
-                    ]
-                )
-
-                RightFirstMetarsalBaseMarker = np.array(
-                    [
-                        Direction * RightFirstMetarsalBaseMarkerX[FrameNumber],
-                        Direction * RightFirstMetarsalBaseMarkerY[FrameNumber],
-                        RightFirstMetarsalBaseMarkerZ[FrameNumber],
-                    ]
-                )
-                RightFirstMetarsalHeadMarker = np.array(
-                    [
-                        Direction * RightFirstMetarsalHeadMarkerX[FrameNumber],
-                        Direction * RightFirstMetarsalHeadMarkerY[FrameNumber],
-                        RightFirstMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                RightFifthMetarsalHeadMarker = np.array(
-                    [
-                        Direction * RightFifthMetarsalHeadMarkerX[FrameNumber],
-                        Direction * RightFifthMetarsalHeadMarkerY[FrameNumber],
-                        RightFifthMetarsalHeadMarkerZ[FrameNumber],
-                    ]
-                )
-                RightHalluxMarker = np.array(
-                    [
-                        Direction * RightHalluxMarkerX[FrameNumber],
-                        Direction * RightHalluxMarkerY[FrameNumber],
-                        RightHalluxMarkerZ[FrameNumber],
-                    ]
-                )
-
-            # Compute Technical Coordinate System: Trunk
-            if TrunkFlag == 1:
-                [ETrunkTech, PelvisCenterLab, ShouldersCenterLab] = (
-                    gait.TechCS_Trunk_Newington(
-                        C7Marker,
-                        LeftClavicleMarker,
-                        RightClavicleMarker,
-                        LeftASISMarker,
-                        RightASISMarker,
-                        SacralMarker,
-                    )
-                )
-                # Compute Anatomical Coordinate System: Trunk
-                ETrunkAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueETrunkAnatRelTech, ETrunkTech
-                )
-                # Overwrite in case Trunk transformation is zeros in Static File
-                ETrunkAnat = ETrunkTech
-
-            # Compute Technical Coordinate System: Pelvis
-            [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(
-                LeftASISMarker, RightASISMarker, SacralMarker
-            )
-            # Compute Anatomical Coordinate System: Pelvis
-            EPelvisAnat = math.TransformAnatCoorSysFromTechCoors(
-                self.valueEPelvisAnatRelTech, EPelvisTech
-            )
-
-            # Compute Hip Center Location, relative to midASIS point and expressed relative to pelvic coor system
-            if self.HipModelName == "Newington":
-                # Newington
-                [LeftHipCenterPelvis, LeftHipCenterLab] = (
-                    gait.JointCenterModel_Hip_Newington(
-                        "Left",
-                        self.MarkerDiameter,
-                        self.valueASISdist,
-                        self.valueLeftASIStoGTdist,
-                        self.valueLeftLegLength,
-                        self.valueRightLegLength,
-                        RightASISMarker,
-                        LeftASISMarker,
-                        EPelvisTech,
-                        MidASISLab,
-                    )
-                )
-                [RightHipCenterPelvis, RightHipCenterLab] = (
-                    gait.JointCenterModel_Hip_Newington(
-                        "Right",
-                        self.MarkerDiameter,
-                        self.valueASISdist,
-                        self.valueRightASIStoGTdist,
-                        self.valueLeftLegLength,
-                        self.valueRightLegLength,
-                        RightASISMarker,
-                        LeftASISMarker,
-                        EPelvisTech,
-                        MidASISLab,
-                    )
-                )
-            if self.HipModelName == "Harrington":
-                # Harrington Hip Model
-                [LeftHipCenterPelvis, LeftHipCenterLab] = (
-                    gait.JointCenterModel_Hip_Harrington(
-                        "Left",
-                        self.valueASISdist,
-                        RightASISMarker,
-                        LeftASISMarker,
-                        SacralMarker,
-                        EPelvisTech,
-                        MidASISLab,
-                    )
-                )
-                [RightHipCenterPelvis, RightHipCenterLab] = (
-                    gait.JointCenterModel_Hip_Harrington(
-                        "Right",
-                        self.valueASISdist,
-                        RightASISMarker,
-                        LeftASISMarker,
-                        SacralMarker,
-                        EPelvisTech,
-                        MidASISLab,
-                    )
-                )
-            if self.HipModelName == "Harrington2":
-                # Harrington Hip Model- 2 variable
-                [LeftHipCenterPelvis, LeftHipCenterLab] = (
-                    gait.JointCenterModel_Hip_Harrington2(
-                        "Left",
-                        self.valueASISdist,
-                        self.valueLeftLegLength,
-                        self.valueRightLegLength,
-                        RightASISMarker,
-                        LeftASISMarker,
-                        SacralMarker,
-                        EPelvisTech,
-                        MidASISLab,
-                    )
-                )
-                [RightHipCenterPelvis, RightHipCenterLab] = (
-                    gait.JointCenterModel_Hip_Harrington2(
-                        "Right",
-                        self.valueASISdist,
-                        self.valueLeftLegLength,
-                        self.valueRightLegLength,
-                        RightASISMarker,
-                        LeftASISMarker,
-                        SacralMarker,
-                        EPelvisTech,
-                        MidASISLab,
-                    )
-                )
-
-            # Compute Technical Coordinate System: Thigh
-            LeftEThighTech = gait.TechCS_Thigh_Newington(
-                "Left", LeftHipCenterLab, LeftThighMarker, LeftLateralKneeMarker
-            )
-            RightEThighTech = gait.TechCS_Thigh_Newington(
-                "Right", RightHipCenterLab, RightThighMarker, RightLateralKneeMarker
-            )
-            # Compute Anatomical Coordinate System: Thigh
-            LeftEThighAnat = math.TransformAnatCoorSysFromTechCoors(
-                self.valueLeftEThighAnatRelTech, LeftEThighTech
-            )
-            RightEThighAnat = math.TransformAnatCoorSysFromTechCoors(
-                self.valueRightEThighAnatRelTech, RightEThighTech
-            )
-
-            # Compute Location of Knee Center (in lab space, based on thigh anatomical frame)
-            LeftKneeCenterLab = math.TransformPointIntoLabCoors(
-                self.valueLeftKneeCenterThigh, LeftEThighTech, LeftLateralKneeMarker
-            )
-            RightKneeCenterLab = math.TransformPointIntoLabCoors(
-                self.valueRightKneeCenterThigh, RightEThighTech, RightLateralKneeMarker
-            )
-
-            # print LeftTibialTriadCheck, RightTibialTriadCheck
-
-            # Compute Technical Coordinate System: Shank
-            if LeftTibialTriadCheck is True:
-                LeftEShankTech = gait.TechCS_Shank_Newington(
-                    "Left",
-                    LeftTibialUpperMarker,
-                    LeftTibialLowerMarker,
-                    LeftTibialMarker,
-                )
-            else:
-                LeftEShankTech = gait.TechCS_Shank_Newington(
-                    "Left", LeftKneeCenterLab, LeftTibialMarker, LeftLateralAnkleMarker
-                )
-            if RightTibialTriadCheck is True:
-                RightEShankTech = gait.TechCS_Shank_Newington(
-                    "Right",
-                    RightTibialUpperMarker,
-                    RightTibialLowerMarker,
-                    RightTibialMarker,
-                )
-            else:
-                RightEShankTech = gait.TechCS_Shank_Newington(
-                    "Right",
-                    RightKneeCenterLab,
-                    RightTibialMarker,
-                    RightLateralAnkleMarker,
-                )
-            # print FrameNumber, RightEShankTech
-
-            # Compute anklejoint centers
-            if LeftTibialTriadCheck is True:
-                LeftAnkleCenterLab = math.TransformPointIntoLabCoors(
-                    self.valueLeftAnkleCenterShank, LeftEShankTech, LeftTibialMarker
-                )
-            else:
-                LeftAnkleCenterLab = math.TransformPointIntoLabCoors(
-                    self.valueLeftAnkleCenterShank,
-                    LeftEShankTech,
-                    LeftLateralAnkleMarker,
-                )
-            if RightTibialTriadCheck is True:
-                RightAnkleCenterLab = math.TransformPointIntoLabCoors(
-                    self.valueRightAnkleCenterShank, RightEShankTech, RightTibialMarker
-                )
-            else:
-                RightAnkleCenterLab = math.TransformPointIntoLabCoors(
-                    self.valueRightAnkleCenterShank,
-                    RightEShankTech,
-                    RightLateralAnkleMarker,
-                )
-            # print FrameNumber, RightAnkleCenterLab
-
-            # If Medial ankle is available,then recompute ankle joint center
-            if LeftMedialAnkleMarkerDropOff == 0:
-                LeftAnkleCenterLab = gait.JointCenterModel_Ankle_Newington(
-                    "Left",
-                    self.MarkerDiameter,
-                    self.valueLeftAnkleWidth,
-                    LeftLateralAnkleMarker,
-                    LeftMedialAnkleMarker,
-                )
-            if RightMedialAnkleMarkerDropOff == 0:
-                RightAnkleCenterLab = gait.JointCenterModel_Ankle_Newington(
-                    "Right",
-                    self.MarkerDiameter,
-                    self.valueRightAnkleWidth,
-                    RightLateralAnkleMarker,
-                    RightMedialAnkleMarker,
-                )
-
-            # Compute Technical Coordinate System: Foot
-            LeftEFootTech = gait.TechCS_Foot_Newington(
-                "Left", LeftKneeCenterLab, LeftAnkleCenterLab, LeftToeMarker
-            )
-            RightEFootTech = gait.TechCS_Foot_Newington(
-                "Right", RightKneeCenterLab, RightAnkleCenterLab, RightToeMarker
-            )
-
-            # Compute Technical Coordinate System: Left Foot Segments
-            if self.valueLeftFootModelCheck == "1":
-                LeftEHindfootTech = gait.TechCS_Hindfoot_mSHCG(
-                    "Left",
-                    LeftLateralCalcaneusMarker,
-                    LeftMedialCalcaneusMarker,
-                    LeftPosteriorCalcaneusMarker,
-                )
-                LeftEForefootTech = gait.TechCS_Forefoot_mSHCG(
-                    "Left",
-                    LeftFirstMetarsalBaseMarker,
-                    LeftFirstMetarsalHeadMarker,
-                    LeftFifthMetarsalHeadMarker,
-                )
-                LeftEHalluxTech = gait.TechCS_Hallux_mSHCG(
-                    "Left",
-                    LeftHalluxMarker,
-                    LeftFirstMetatarsoPhalangealJointMarker,
-                    LeftToeMarker,
-                )
-
-            # Compute Technical Coordinate System: Right Foot Segments
-            if self.valueRightFootModelCheck == "1":
-                RightEHindfootTech = gait.TechCS_Hindfoot_mSHCG(
-                    "Right",
-                    RightLateralCalcaneusMarker,
-                    RightMedialCalcaneusMarker,
-                    RightPosteriorCalcaneusMarker,
-                )
-                RightEForefootTech = gait.TechCS_Forefoot_mSHCG(
-                    "Right",
-                    RightFirstMetarsalBaseMarker,
-                    RightFirstMetarsalHeadMarker,
-                    RightFifthMetarsalHeadMarker,
-                )
-                RightEHalluxTech = gait.TechCS_Hallux_mSHCG(
-                    "Right",
-                    RightHalluxMarker,
-                    RightFirstMetatarsoPhalangealJointMarker,
-                    RightToeMarker,
-                )
-
-            # Compute Anatomical Coordinate Systems: Shank
-            LeftEShankProximalAnat = math.TransformAnatCoorSysFromTechCoors(
-                self.valueLeftEShankProximalAnatRelTech, LeftEShankTech
-            )
-            RightEShankProximalAnat = math.TransformAnatCoorSysFromTechCoors(
-                self.valueRightEShankProximalAnatRelTech, RightEShankTech
-            )
-            LeftEShankDistalAnat = math.TransformAnatCoorSysFromTechCoors(
-                self.valueLeftEShankDistalAnatRelTech, LeftEShankTech
-            )
-            RightEShankDistalAnat = math.TransformAnatCoorSysFromTechCoors(
-                self.valueRightEShankDistalAnatRelTech, RightEShankTech
-            )
-
-            # If Medial ankle is available,then recompute Shank Proximal/Distal Anatomical Coordinate System
-            if LeftMedialAnkleMarkerDropOff == 0:
-                LeftEShankProximalAnat = gait.AnatCS_Shank_Proximal_Newington(
-                    "Left", LeftKneeCenterLab, LeftLateralKneeMarker, LeftAnkleCenterLab
-                )
-                LeftEShankDistalAnat = gait.AnatCS_Shank_Distal_VCM(
-                    "Left",
-                    LeftKneeCenterLab,
-                    LeftAnkleCenterLab,
-                    LeftLateralAnkleMarker,
-                )
-            if RightMedialAnkleMarkerDropOff == 0:
-                RightEShankProximalAnat = gait.AnatCS_Shank_Proximal_Newington(
-                    "Right",
-                    RightKneeCenterLab,
-                    RightLateralKneeMarker,
-                    RightAnkleCenterLab,
-                )
-                RightEShankDistalAnat = gait.AnatCS_Shank_Distal_VCM(
-                    "Right",
-                    RightKneeCenterLab,
-                    RightAnkleCenterLab,
-                    RightLateralAnkleMarker,
-                )
-
-            # Compute Anatomical Coordinate Systems: Foot
-            LeftEFootAnat = math.TransformAnatCoorSysFromTechCoors(
-                self.valueLeftEFootAnatRelTech, LeftEFootTech
-            )
-            RightEFootAnat = math.TransformAnatCoorSysFromTechCoors(
-                self.valueRightEFootAnatRelTech, RightEFootTech
-            )
-
-            try:
-                # Compute 2nd Foot Coordinate System for Joint Reaction forces that uses the Tibia for 2md defining line
-                LeftEFootTibAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueLeftEFootAnat2RelTech, LeftEFootTech
-                )
-                RightEFootTibAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueRightEFootAnat2RelTech, RightEFootTech
-                )
-            except:
-                LeftEFootTibAnat = np.matrix(
-                    [[0.0 for m in range(3)] for n in range(3)]
-                )
-                RightEFootTibAnat = np.matrix(
-                    [[0.0 for m in range(3)] for n in range(3)]
-                )
-
-            # Compute Anatomical Coordinate System: Left Foot Segments
-            if self.valueLeftFootModelCheck == "1":
-                LeftEHindfootAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueLeftEHindfootAnatRelTech, LeftEHindfootTech
-                )
-                LeftEForefootAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueLeftEForefootAnatRelTech, LeftEForefootTech
-                )
-                LeftEHalluxAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueLeftEHalluxAnatRelTech, LeftEHalluxTech
-                )
-                # 3D array, local vector in hindfoot to the upper cal point
-                LeftUpperPosteriorCalcaneusHindfoot = np.array(
-                    [
-                        arrayLPCALUX[FrameNumber],
-                        arrayLPCALUY[FrameNumber],
-                        arrayLPCALUZ[FrameNumber],
-                    ]
-                )
-                # Transform into Lab CS
-                LeftUpperPosteriorCalcaneusMarker = math.TransformPointIntoLabCoors(
-                    LeftUpperPosteriorCalcaneusHindfoot,
-                    LeftEHindfootAnat,
-                    LeftPosteriorCalcaneusMarker,
-                )
-
-            # Compute Anatomical Coordinate System: Right Foot Segments
-            if self.valueRightFootModelCheck == "1":
-                RightEHindfootAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueRightEHindfootAnatRelTech, RightEHindfootTech
-                )
-                RightEForefootAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueRightEForefootAnatRelTech, RightEForefootTech
-                )
-                RightEHalluxAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueRightEHalluxAnatRelTech, RightEHalluxTech
-                )
-                # 3D array, local vector in hindfoot to the upper cal point
-                RightUpperPosteriorCalcaneusHindfoot = np.array(
-                    [
-                        arrayRPCALUX[FrameNumber],
-                        arrayRPCALUY[FrameNumber],
-                        arrayRPCALUZ[FrameNumber],
-                    ]
-                )
-                # Transform into Lab CS
-                RightUpperPosteriorCalcaneusMarker = math.TransformPointIntoLabCoors(
-                    RightUpperPosteriorCalcaneusHindfoot,
-                    RightEHindfootAnat,
-                    RightPosteriorCalcaneusMarker,
-                )
-
-            # Compute Kinematics
-
-            # Compute trunk kinematics
-            if TrunkFlag == 1:
-                TrunkAnglesTORRad = math.EulerAngles_YXZ(ETrunkAnat, ELab)
-                TrunkAnglesROTRad = math.EulerAngles_ZXY(ETrunkAnat, ELab)
-                if self.TrunkRotationSequence == "TOR":
-                    TrunkAnglesRad = TrunkAnglesTORRad
-                if self.TrunkRotationSequence == "ROT":
-                    TrunkAnglesRad = TrunkAnglesROTRad
-            else:
-                TrunkAnglesTORRad = np.array([0.0, 0.0, 0.0])
-                TrunkAnglesROTRad = np.array([0.0, 0.0, 0.0])
-                TrunkAnglesRad = np.array([0.0, 0.0, 0.0])
-            # Compute pelvic kinematics
-            PelvisAnglesTORRad = math.EulerAngles_YXZ(EPelvisAnat, ELab)
-            PelvisAnglesROTRad = math.EulerAngles_ZXY(EPelvisAnat, ELab)
-            if self.PelvisRotationSequence == "TOR":
-                PelvisAnglesRad = PelvisAnglesTORRad
-            if self.PelvisRotationSequence == "ROT":
-                PelvisAnglesRad = PelvisAnglesROTRad
-            # Compute thigh kinematics
-            LeftThighAnglesRad = math.EulerAngles_YXZ(LeftEThighAnat, ELab)
-            RightThighAnglesRad = math.EulerAngles_YXZ(RightEThighAnat, ELab)
-            # Compute shank kinematics
-            LeftShankAnglesRad = math.EulerAngles_YXZ(LeftEShankDistalAnat, ELab)
-            RightShankAnglesRad = math.EulerAngles_YXZ(RightEShankDistalAnat, ELab)
-            # Compute foot kinematics
-            LeftFootAnglesRad = math.EulerAngles_YXZ(LeftEFootAnat, ELab)
-            RightFootAnglesRad = math.EulerAngles_YXZ(RightEFootAnat, ELab)
-            # Compute foot segment kinematics
-            if self.valueLeftFootModelCheck == "1":
-                LeftHindfootAnglesRad = math.EulerAngles_YXZ(LeftEHindfootAnat, ELab)
-                LeftForefootAnglesRad = math.EulerAngles_YXZ(LeftEForefootAnat, ELab)
-                LeftHalluxAnglesRad = math.EulerAngles_YXZ(LeftEHalluxAnat, ELab)
-                # Create a Coordinate System with y axis aligned with HF progression axis
-                ey = np.array(
-                    [LeftEHindfootAnat[0][1], LeftEHindfootAnat[1][1], 0]
-                )  # LeftEHindfootAnat[1][2]])
-                ey = ey / np.linalg.norm(ey)
-                R1 = np.array([0.0, 0.0, 1.0])
-                ex = np.cross(ey, R1)
-                ez = np.cross(ex, ey)
-                LeftEHFProgression = np.column_stack((ex, ey, ez))
-                ##########################################################################
-                # Segment Inclinatiosn are measured w.r.t. Lab axis aligned with HF Progression
-                LeftHindfootAnglesRelHFProgressionRad = math.EulerAngles_YXZ(
-                    LeftEHindfootAnat, LeftEHFProgression
-                )
-                LeftForefootAnglesRelHFProgressionRad = math.EulerAngles_YXZ(
-                    LeftEForefootAnat, LeftEHFProgression
-                )
-                LeftHalluxAnglesRelHFProgressionRad = math.EulerAngles_YXZ(
-                    LeftEHalluxAnat, LeftEHFProgression
-                )
-            if self.valueRightFootModelCheck == "1":
-                RightHindfootAnglesRad = math.EulerAngles_YXZ(RightEHindfootAnat, ELab)
-                RightForefootAnglesRad = math.EulerAngles_YXZ(RightEForefootAnat, ELab)
-                RightHalluxAnglesRad = math.EulerAngles_YXZ(RightEHalluxAnat, ELab)
-                # Create a Coordinate System with y axis aligned with HF progression axis
-                ey = np.array(
-                    [RightEHindfootAnat[0][1], RightEHindfootAnat[1][1], 0]
-                )  # RightEHindfootAnat[1][2]])
-                ey = ey / np.linalg.norm(ey)
-                R1 = np.array([0.0, 0.0, 1.0])
-                ex = np.cross(ey, R1)
-                ez = np.cross(ex, ey)
-                RightEHFProgression = np.column_stack((ex, ey, ez))
-                ##########################################################################
-                # Segment Inclinatiosn are measured w.r.t. Lab axis aligned with HF Progression
-                RightHindfootAnglesRelHFProgressionRad = math.EulerAngles_YXZ(
-                    RightEHindfootAnat, RightEHFProgression
-                )
-                RightForefootAnglesRelHFProgressionRad = math.EulerAngles_YXZ(
-                    RightEForefootAnat, RightEHFProgression
-                )
-                RightHalluxAnglesRelHFProgressionRad = math.EulerAngles_YXZ(
-                    RightEHalluxAnat, RightEHFProgression
-                )
-            # Compute hip kinematics
-            LeftHipAnglesRad = math.EulerAngles_YXZ(LeftEThighAnat, EPelvisAnat)
-            RightHipAnglesRad = math.EulerAngles_YXZ(RightEThighAnat, EPelvisAnat)
-            # Compute knee kinematics
-            LeftKneeAnglesProximalRad = math.EulerAngles_YXZ(
-                LeftEShankProximalAnat, LeftEThighAnat
-            )
-            RightKneeAnglesProximalRad = math.EulerAngles_YXZ(
-                RightEShankProximalAnat, RightEThighAnat
-            )
-            LeftKneeAnglesDistalRad = math.EulerAngles_YXZ(
-                LeftEShankDistalAnat, LeftEThighAnat
-            )
-            RightKneeAnglesDistalRad = math.EulerAngles_YXZ(
-                RightEShankDistalAnat, RightEThighAnat
-            )
-            if self.ShankCoordinateSystem == "Distal":
-                LeftKneeAnglesRad = math.EulerAngles_YXZ(
-                    LeftEShankDistalAnat, LeftEThighAnat
-                )
-                RightKneeAnglesRad = math.EulerAngles_YXZ(
-                    RightEShankDistalAnat, RightEThighAnat
-                )
-            if self.ShankCoordinateSystem == "Proximal":
-                LeftKneeAnglesRad = math.EulerAngles_YXZ(
-                    LeftEShankProximalAnat, LeftEThighAnat
-                )
-                RightKneeAnglesRad = math.EulerAngles_YXZ(
-                    RightEShankProximalAnat, RightEThighAnat
-                )
-            # Compute ankle kinematics
-            LeftAnkleAnglesRad = math.EulerAngles_YXZ(
-                LeftEFootAnat, LeftEShankDistalAnat
-            )
-            RightAnkleAnglesRad = math.EulerAngles_YXZ(
-                RightEFootAnat, RightEShankDistalAnat
-            )
-            # Compute foot joint kinematics
-            if self.valueLeftFootModelCheck == "1":
-                LeftAnkleComplexAnglesRad = math.EulerAngles_YXZ(
-                    LeftEHindfootAnat, LeftEShankDistalAnat
-                )
-                LeftMidfootAnglesRad = math.EulerAngles_YXZ(
-                    LeftEForefootAnat, LeftEHindfootAnat
-                )
-                if (
-                    not LeftHalluxMarker[2] == 0
-                ):  # if Hallux marker missing, set ToeAngles to zero
-                    LeftToesAnglesRad = math.EulerAngles_YXZ(
-                        LeftEHalluxAnat, LeftEForefootAnat
-                    )
-                else:
-                    LeftToesAnglesRad = np.array([0.0, 0.0, 0.0])
-
-            if self.valueRightFootModelCheck == "1":
-                RightAnkleComplexAnglesRad = math.EulerAngles_YXZ(
-                    RightEHindfootAnat, RightEShankDistalAnat
-                )
-                RightMidfootAnglesRad = math.EulerAngles_YXZ(
-                    RightEForefootAnat, RightEHindfootAnat
-                )
-                RightToesAnglesRad = math.EulerAngles_YXZ(
-                    RightEHalluxAnat, RightEForefootAnat
-                )
-                if (
-                    not RightHalluxMarker[2] == 0
-                ):  # if Hallux marker missing, set ToeAngles to zero
-                    RightToesAnglesRad = math.EulerAngles_YXZ(
-                        RightEHalluxAnat, RightEForefootAnat
-                    )
-                else:
-                    RightToesAnglesRad = np.array([0.0, 0.0, 0.0])
-
-            # Convert units of angles from radians to degrees & set sign based on side and plotting convention
-            Sign = -1  # For Left Side
-
-            T1, T1[0, 0], T1[1, 1], T1[2, 2] = np.eye(3), -Sign, +1, Sign
-            T2, T2[0, 0], T2[1, 1], T2[2, 2] = np.eye(3), Sign, -1, Sign
-            T3, T3[0, 0], T3[1, 1], T3[2, 2] = np.eye(3), Sign, +1, Sign
-
-            LeftTrunkAnglesDeg = T1.dot(TrunkAnglesRad) * 180 / np.pi
-            LeftTrunkAnglesTORDeg = T1.dot(TrunkAnglesTORRad) * 180 / np.pi
-            LeftTrunkAnglesROTDeg = T1.dot(TrunkAnglesROTRad) * 180 / np.pi
-            LeftPelvisAnglesDeg = T1.dot(PelvisAnglesRad) * 180 / np.pi
-            LeftPelvisAnglesTORDeg = T1.dot(PelvisAnglesTORRad) * 180 / np.pi
-            LeftPelvisAnglesROTDeg = T1.dot(PelvisAnglesROTRad) * 180 / np.pi
-            LeftThighAnglesDeg = T1.dot(LeftThighAnglesRad) * 180 / np.pi
-            LeftShankAnglesDeg = T1.dot(LeftShankAnglesRad) * 180 / np.pi
-            LeftFootAnglesDeg = T1.dot(LeftFootAnglesRad) * 180 / np.pi
-            LeftHipAnglesDeg = T2.dot(LeftHipAnglesRad) * 180 / np.pi
-            LeftKneeAnglesDeg = T3.dot(LeftKneeAnglesRad) * 180 / np.pi
-            LeftKneeAnglesProximalDeg = T3.dot(LeftKneeAnglesProximalRad) * 180 / np.pi
-            LeftKneeAnglesDistalDeg = T3.dot(LeftKneeAnglesDistalRad) * 180 / np.pi
-            LeftAnkleAnglesDeg = T2.dot(LeftAnkleAnglesRad) * 180 / np.pi
-            if self.valueLeftFootModelCheck == "1":
-                LeftHindfootAnglesDeg = T1.dot(LeftHindfootAnglesRad) * 180 / np.pi
-                LeftForefootAnglesDeg = T1.dot(LeftForefootAnglesRad) * 180 / np.pi
-                LeftHalluxAnglesDeg = T1.dot(LeftHalluxAnglesRad) * 180 / np.pi
-                LeftHindfootAnglesRelHFProgressionDeg = (
-                    T2.dot(LeftHindfootAnglesRelHFProgressionRad) * 180 / np.pi
-                )
-                LeftForefootAnglesRelHFProgressionDeg = (
-                    T2.dot(LeftForefootAnglesRelHFProgressionRad) * 180 / np.pi
-                )
-                LeftHalluxAnglesRelHFProgressionDeg = (
-                    T2.dot(LeftHalluxAnglesRelHFProgressionRad) * 180 / np.pi
-                )
-                LeftAnkleComplexAnglesDeg = (
-                    T2.dot(LeftAnkleComplexAnglesRad) * 180 / np.pi
-                )
-                LeftMidfootAnglesDeg = T2.dot(LeftMidfootAnglesRad) * 180 / np.pi
-                LeftToesAnglesDeg = T2.dot(LeftToesAnglesRad) * 180 / np.pi
-
-            # Store Angles in radians without changing sign based on side and plotting convention
-            # These are used in computing Kinetics
-            T1, T2, T3 = np.eye(3), np.eye(3), np.eye(3)
-            LeftTrunkAnglesRad = T1.dot(TrunkAnglesRad)
-            LeftPelvisAnglesRad = T1.dot(PelvisAnglesRad)
-            LeftThighAnglesRad = T1.dot(LeftThighAnglesRad)
-            LeftShankAnglesRad = T1.dot(LeftShankAnglesRad)
-            LeftFootAnglesRad = T1.dot(LeftFootAnglesRad)
-            LeftHipAnglesRad = T2.dot(LeftHipAnglesRad)
-            LeftKneeAnglesRad = T3.dot(LeftKneeAnglesRad)
-            LeftAnkleAnglesRad = T2.dot(LeftAnkleAnglesRad)
-
-            Sign = 1  # For Right Side
-
-            T1, T1[0, 0], T1[1, 1], T1[2, 2] = np.eye(3), -Sign, +1, Sign
-            T2, T2[0, 0], T2[1, 1], T2[2, 2] = np.eye(3), Sign, -1, Sign
-            T3, T3[0, 0], T3[1, 1], T3[2, 2] = np.eye(3), Sign, +1, Sign
-
-            RightTrunkAnglesDeg = T1.dot(TrunkAnglesRad) * 180 / np.pi
-            RightTrunkAnglesTORDeg = T1.dot(TrunkAnglesTORRad) * 180 / np.pi
-            RightTrunkAnglesROTDeg = T1.dot(TrunkAnglesROTRad) * 180 / np.pi
-            RightPelvisAnglesDeg = T1.dot(PelvisAnglesRad) * 180 / np.pi
-            RightPelvisAnglesTORDeg = T1.dot(PelvisAnglesTORRad) * 180 / np.pi
-            RightPelvisAnglesROTDeg = T1.dot(PelvisAnglesROTRad) * 180 / np.pi
-            RightThighAnglesDeg = T1.dot(RightThighAnglesRad) * 180 / np.pi
-            RightShankAnglesDeg = T1.dot(RightShankAnglesRad) * 180 / np.pi
-            RightFootAnglesDeg = T1.dot(RightFootAnglesRad) * 180 / np.pi
-            RightHipAnglesDeg = T2.dot(RightHipAnglesRad) * 180 / np.pi
-            RightKneeAnglesDeg = T3.dot(RightKneeAnglesRad) * 180 / np.pi
-            RightKneeAnglesProximalDeg = (
-                T3.dot(RightKneeAnglesProximalRad) * 180 / np.pi
-            )
-            RightKneeAnglesDistalDeg = T3.dot(RightKneeAnglesDistalRad) * 180 / np.pi
-            RightAnkleAnglesDeg = T2.dot(RightAnkleAnglesRad) * 180 / np.pi
-            if self.valueRightFootModelCheck == "1":
-                RightHindfootAnglesDeg = T1.dot(RightHindfootAnglesRad) * 180 / np.pi
-                RightForefootAnglesDeg = T1.dot(RightForefootAnglesRad) * 180 / np.pi
-                RightHalluxAnglesDeg = T1.dot(RightHalluxAnglesRad) * 180 / np.pi
-                RightHindfootAnglesRelHFProgressionDeg = (
-                    T2.dot(RightHindfootAnglesRelHFProgressionRad) * 180 / np.pi
-                )
-                RightForefootAnglesRelHFProgressionDeg = (
-                    T2.dot(RightForefootAnglesRelHFProgressionRad) * 180 / np.pi
-                )
-                RightHalluxAnglesRelHFProgressionDeg = (
-                    T2.dot(RightHalluxAnglesRelHFProgressionRad) * 180 / np.pi
-                )
-                RightAnkleComplexAnglesDeg = (
-                    T2.dot(RightAnkleComplexAnglesRad) * 180 / np.pi
-                )
-                RightMidfootAnglesDeg = T2.dot(RightMidfootAnglesRad) * 180 / np.pi
-                RightToesAnglesDeg = T2.dot(RightToesAnglesRad) * 180 / np.pi
-
-            # Store Angles in radians without changing sign based on side and plotting convention
-            # These are used in computing Kinetics
-            T1, T2, T3 = np.eye(3), np.eye(3), np.eye(3)
-            RightTrunkAnglesRad = T1.dot(TrunkAnglesRad)
-            RightPelvisAnglesRad = T1.dot(PelvisAnglesRad)
-            RightThighAnglesRad = T1.dot(RightThighAnglesRad)
-            RightShankAnglesRad = T1.dot(RightShankAnglesRad)
-            RightFootAnglesRad = T1.dot(RightFootAnglesRad)
-            RightHipAnglesRad = T2.dot(RightHipAnglesRad)
-            RightKneeAnglesRad = T3.dot(RightKneeAnglesRad)
-            RightAnkleAnglesRad = T2.dot(RightAnkleAnglesRad)
-
-            # =============================================================================
-            #             Compute Muscle Lengths
-            # =============================================================================
-
-            # Knee Joint Centers based on knee flexion angle
-            # Find KJC w.r.t. HJC from 3rd order polynomial and knee flexion
-            LKF = LeftKneeAnglesProximalDeg[1]
-            RKF = RightKneeAnglesProximalDeg[1]
-
-            LeftKneeX = (
-                KneeX0 + KneeX1 * LKF + KneeX2 * LKF * LKF + KneeX3 * LKF * LKF * LKF
-            )
-            RightKneeX = (
-                KneeX0 + KneeX1 * RKF + KneeX2 * RKF * RKF + KneeX3 * RKF * RKF * RKF
-            )
-            LeftKneeZ = (
-                KneeZ0 + KneeZ1 * LKF + KneeZ2 * LKF * LKF + KneeZ3 * LKF * LKF * LKF
-            )
-            RightKneeZ = (
-                KneeZ0 + KneeZ1 * RKF + KneeZ2 * RKF * RKF + KneeZ3 * RKF * RKF * RKF
-            )
-            LeftDelpKJC_Polynomial = [LeftKneeX, 0, LeftKneeZ]
-            RightDelpKJC_Polynomial = [RightKneeX, 0, RightKneeZ]
-
-            # Patella movement (x and y translation and flexion) with
-            # respect to leg defined by third order polynomials.
-            LeftPatX = PatX0 + PatX1 * LKF + PatX2 * LKF * LKF + PatX3 * LKF * LKF * LKF
-            RightPatX = (
-                PatX0 + PatX1 * RKF + PatX2 * RKF * RKF + PatX3 * RKF * RKF * RKF
-            )
-            LeftPatZ = PatZ0 + PatZ1 * LKF + PatZ2 * LKF * LKF + PatZ3 * LKF * LKF * LKF
-            RightPatZ = (
-                PatZ0 + PatZ1 * RKF + PatZ2 * RKF * RKF + PatZ3 * RKF * RKF * RKF
-            )
-            LeftPatR = PatR0 + PatR1 * LKF + PatR2 * LKF * LKF + PatR3 * LKF * LKF * LKF
-            RightPatR = (
-                PatR0 + PatR1 * RKF + PatR2 * RKF * RKF + PatR3 * RKF * RKF * RKF
-            )
-
-            # Compute Delp Muscle Model Coordinate Systems
-            [EPelvisAnatDelp, MidASISLab] = gait.AnatCS_Pelvis_Delp(
-                LeftASISMarker, RightASISMarker, SacralMarker, PelvicTiltOffset
-            )
-            LeftEThighAnatDelp = LeftEThighAnat
-            RightEThighAnatDelp = RightEThighAnat
-            LeftEShankAnatDelp = LeftEShankProximalAnat  # LeftEShankDistalAnat
-            RightEShankAnatDelp = RightEShankProximalAnat  # RightEShankDistalAnat
-            LeftEPatellaAnatDelp = LeftEShankAnatDelp
-            RightEPatellaAnatDelp = RightEShankAnatDelp
-            # Rotate Patella CS by PatR around Y axis
-            LeftEPatellaAnatDelp = math.RotateCSaroundYaxis(
-                LeftEPatellaAnatDelp, LeftPatR
-            )
-            RightEPatellaAnatDelp = math.RotateCSaroundYaxis(
-                RightEPatellaAnatDelp, RightPatR
-            )
-            LeftECalcaneusAnatDelp = LeftEFootAnat
-            RightECalcaneusAnatDelp = RightEFootAnat
-
-            PelvisOriginDelp = np.array([MidASISLab[0], MidASISLab[1] + 1000.0, 949.0])
-            LeftThighOriginDelp = math.TransformPointIntoLabCoors(
-                DelpLeftHJC, EPelvisAnatDelp, PelvisOriginDelp
-            )
-            RightThighOriginDelp = math.TransformPointIntoLabCoors(
-                DelpRightHJC, EPelvisAnatDelp, PelvisOriginDelp
-            )
-            LeftShankOriginDelp = math.TransformPointIntoLabCoors(
-                LeftDelpKJC_Polynomial, LeftEThighAnatDelp, LeftThighOriginDelp
-            )
-            RightShankOriginDelp = math.TransformPointIntoLabCoors(
-                RightDelpKJC_Polynomial, RightEThighAnatDelp, RightThighOriginDelp
-            )
-            LeftPatellaOriginDelp = math.TransformPointIntoLabCoors(
-                [LeftPatX, -PatY, LeftPatZ], LeftEShankAnatDelp, LeftShankOriginDelp
-            )
-            RightPatellaOriginDelp = math.TransformPointIntoLabCoors(
-                [RightPatX, PatY, RightPatZ], RightEShankAnatDelp, RightShankOriginDelp
-            )
-            LeftCalcaneusOriginDelp_AJC = math.TransformPointIntoLabCoors(
-                DelpAJC, LeftEShankAnatDelp, LeftShankOriginDelp
-            )
-            RightCalcaneusOriginDelp_AJC = math.TransformPointIntoLabCoors(
-                DelpAJC, RightEShankAnatDelp, RightShankOriginDelp
-            )
-            LeftCalcaneusOriginDelp = math.TransformPointIntoLabCoors(
-                LCalC, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp_AJC
-            )
-            RightCalcaneusOriginDelp = math.TransformPointIntoLabCoors(
-                RCalC, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp_AJC
-            )
-
-            # Compute Zero Positions to compute Normalizing Muscle Length
-            ELabDelp = np.eye(3)
-            EPelvisAnatDelp0 = ELabDelp
-            LeftEThighAnatDelp0 = ELabDelp
-            RightEThighAnatDelp0 = ELabDelp
-            LeftEShankAnatDelp0 = ELabDelp
-            RightEShankAnatDelp0 = ELabDelp
-            LeftECalcaneusAnatDelp0 = ELabDelp
-            RightECalcaneusAnatDelp0 = ELabDelp
-            LeftEPatellaAnatDelp0 = ELabDelp
-            RightEPatellaAnatDelp0 = ELabDelp
-            # Rotate Calcaneus to account for normal tibial torsion
-            LeftECalcaneusAnatDelp0 = math.RotateCSaroundZaxis(ELabDelp, 15.0)
-            RightECalcaneusAnatDelp0 = math.RotateCSaroundZaxis(ELabDelp, -15.0)
-            # Flex patellae by constant at zero knee flexion
-            LeftEPatellaAnatDelp0 = math.RotateCSaroundYaxis(ELabDelp, PatR0)
-            RightEPatellaAnatDelp0 = math.RotateCSaroundYaxis(ELabDelp, PatR0)
-
-            PelvisOriginDelp0 = PelvisOriginDelp
-            LeftThighOriginDelp0 = PelvisOriginDelp + DelpLeftHJC
-            RightThighOriginDelp0 = PelvisOriginDelp + DelpRightHJC
-            LeftShankOriginDelp0 = PelvisOriginDelp + DelpLeftHJC + DelpKJC0
-            RightShankOriginDelp0 = PelvisOriginDelp + DelpRightHJC + DelpKJC0
-            LeftPatellaOriginDelp0 = (
-                PelvisOriginDelp + DelpLeftHJC + DelpKJC0 + DelpLPat0
-            )
-            RightPatellaOriginDelp0 = (
-                PelvisOriginDelp + DelpRightHJC + DelpKJC0 + DelpRPat0
-            )
-            LeftCalcaneusOriginDelp0 = (
-                PelvisOriginDelp + DelpLeftHJC + DelpKJC0 + DelpAJC + LCalC
-            )
-            RightCalcaneusOriginDelp0 = (
-                PelvisOriginDelp + DelpRightHJC + DelpKJC0 + DelpAJC + RCalC
-            )
-
-            # Compute Muscle lengths
-            [LeftGMaS, LeftGMaSMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                GMaS,
-                GMaS_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightGMaS, RightGMaSMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                GMaS,
-                GMaS_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftGMaS0, LeftGMaSMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                GMaS,
-                GMaS_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightGMaS0, RightGMaSMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                GMaS,
-                GMaS_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftGMaM, LeftGMaMMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                GMaM,
-                GMaM_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightGMaM, RightGMaMMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                GMaM,
-                GMaM_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftGMaM0, LeftGMaMMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                GMaM,
-                GMaM_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightGMaM0, RightGMaMMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                GMaM,
-                GMaM_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftGMaI, LeftGMaIMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                GMaI,
-                GMaI_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightGMaI, RightGMaIMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                GMaI,
-                GMaI_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftGMaI0, LeftGMaIMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                GMaI,
-                GMaI_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightGMaI0, RightGMaIMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                GMaI,
-                GMaI_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftIlia, LeftIliaMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                Ilia,
-                Ilia_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightIlia, RightIliaMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                Ilia,
-                Ilia_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftIlia0, LeftIliaMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                Ilia,
-                Ilia_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightIlia0, RightIliaMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                Ilia,
-                Ilia_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftPsoa, LeftPsoaMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                Psoa,
-                Psoa_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightPsoa, RightPsoaMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                Psoa,
-                Psoa_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftPsoa0, LeftPsoaMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                Psoa,
-                Psoa_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightPsoa0, RightPsoaMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                Psoa,
-                Psoa_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftSeMe, LeftSeMeMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                SeMe,
-                SeMe_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightSeMe, RightSeMeMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                SeMe,
-                SeMe_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftSeMe0, LeftSeMeMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                SeMe,
-                SeMe_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightSeMe0, RightSeMeMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                SeMe,
-                SeMe_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftSeTe, LeftSeTeMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                SeTe,
-                SeTe_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightSeTe, RightSeTeMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                SeTe,
-                SeTe_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftSeTe0, LeftSeTeMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                SeTe,
-                SeTe_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightSeTe0, RightSeTeMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                SeTe,
-                SeTe_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftBiFL, LeftBiFLMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                BiFL,
-                BiFL_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightBiFL, RightBiFLMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                BiFL,
-                BiFL_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftBiFL0, LeftBiFLMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                BiFL,
-                BiFL_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightBiFL0, RightBiFLMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                BiFL,
-                BiFL_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftBiFS, LeftBiFSMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                BiFS,
-                BiFS_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightBiFS, RightBiFSMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                BiFS,
-                BiFS_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftBiFS0, LeftBiFSMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                BiFS,
-                BiFS_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightBiFS0, RightBiFSMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                BiFS,
-                BiFS_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftSole, LeftSoleMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                Sole,
-                Sole_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightSole, RightSoleMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                Sole,
-                Sole_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftSole0, LeftSoleMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                Sole,
-                Sole_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightSole0, RightSoleMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                Sole,
-                Sole_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftTiPo, LeftTiPoMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                TiPo,
-                TiPo_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightTiPo, RightTiPoMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                TiPo,
-                TiPo_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftTiPo0, LeftTiPoMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                TiPo,
-                TiPo_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightTiPo0, RightTiPoMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                TiPo,
-                TiPo_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftPeBr, LeftPeBrMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                PeBr,
-                PeBr_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightPeBr, RightPeBrMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                PeBr,
-                PeBr_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftPeBr0, LeftPeBrMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                PeBr,
-                PeBr_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightPeBr0, RightPeBrMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                PeBr,
-                PeBr_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            [LeftPeLn, LeftPeLnMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                PeLn,
-                PeLn_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightPeLn, RightPeLnMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                PeLn,
-                PeLn_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftPeLn0, LeftPeLnMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                PeLn,
-                PeLn_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightPeLn0, RightPeLnMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                PeLn,
-                PeLn_Seg,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            # Remove Second Point if Knee Flexion < 83 deg
-            Left_ReFe = []
-            if LKF < 83:
-                Left_ReFe.append(ReFe[0])
-                Left_ReFe.append(ReFe[2])
-                Left_ReFe_Seg = ["Pelvis", "Patella"]
-            else:
-                Left_ReFe = ReFe
-                Left_ReFe_Seg = ReFe_Seg
-            Right_ReFe = []
-            if RKF < 83:
-                Right_ReFe.append(ReFe[0])
-                Right_ReFe.append(ReFe[2])
-                Right_ReFe_Seg = ["Pelvis", "Patella"]
-            else:
-                Right_ReFe = ReFe
-                Right_ReFe_Seg = ReFe_Seg
-
-            Left_ReFe0 = []
-            Left_ReFe0.append(ReFe[0])
-            Left_ReFe0.append(ReFe[2])
-            Left_ReFe_Seg0 = ["Pelvis", "Patella"]
-            Right_ReFe0 = []
-            Right_ReFe0.append(ReFe[0])
-            Right_ReFe0.append(ReFe[2])
-            Right_ReFe_Seg0 = ["Pelvis", "Patella"]
-
-            [LeftReFe, LeftReFeMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                Left_ReFe,
-                Left_ReFe_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightReFe, RightReFeMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                Right_ReFe,
-                Right_ReFe_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftReFe0, LeftReFeMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                Left_ReFe0,
-                Left_ReFe_Seg0,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightReFe0, RightReFeMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                Right_ReFe0,
-                Right_ReFe_Seg0,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            # Remove points depending on knee flexion
-            Left_VaLa = []
-            if LKF < 110:
-                if LKF < 69:
-                    Left_VaLa.append(VaLa[0])
-                    Left_VaLa.append(VaLa[1])
-                    Left_VaLa.append(VaLa[4])
-                    Left_VaLa_Seg = ["Thigh", "Thigh", "Patella"]
-                else:
-                    Left_VaLa.append(VaLa[0])
-                    Left_VaLa.append(VaLa[1])
-                    Left_VaLa.append(VaLa[2])
-                    Left_VaLa.append(VaLa[4])
-                    Left_VaLa_Seg = ["Thigh", "Thigh", "Thigh", "Patella"]
-            else:
-                Left_VaLa = VaLa
-                Left_VaLa_Seg = VaLa_Seg
-            Right_VaLa = []
-            if RKF < 110:
-                if RKF < 69:
-                    Right_VaLa.append(VaLa[0])
-                    Right_VaLa.append(VaLa[1])
-                    Right_VaLa.append(VaLa[4])
-                    Right_VaLa_Seg = ["Thigh", "Thigh", "Patella"]
-                else:
-                    Right_VaLa.append(VaLa[0])
-                    Right_VaLa.append(VaLa[1])
-                    Right_VaLa.append(VaLa[2])
-                    Right_VaLa.append(VaLa[4])
-                    Right_VaLa_Seg = ["Thigh", "Thigh", "Thigh", "Patella"]
-            else:
-                Right_VaLa = VaLa
-                Right_VaLa_Seg = VaLa_Seg
-
-            Left_VaLa0 = []
-            Left_VaLa0.append(VaLa[0])
-            Left_VaLa0.append(VaLa[1])
-            Left_VaLa0.append(VaLa[4])
-            Left_VaLa_Seg0 = ["Thigh", "Thigh", "Patella"]
-            Right_VaLa0 = []
-            Right_VaLa0.append(VaLa[0])
-            Right_VaLa0.append(VaLa[1])
-            Right_VaLa0.append(VaLa[4])
-            Right_VaLa_Seg0 = ["Thigh", "Thigh", "Patella"]
-
-            [LeftVaLa, LeftVaLaMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                Left_VaLa,
-                Left_VaLa_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightVaLa, RightVaLaMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                Right_VaLa,
-                Right_VaLa_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftVaLa0, LeftVaLaMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                Left_VaLa0,
-                Left_VaLa_Seg0,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightVaLa0, RightVaLaMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                Right_VaLa0,
-                Right_VaLa_Seg0,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            # Remove points depending on knee flexion
-            Left_GaMe = []
-            if LKF > 44:
-                Left_GaMe.append(GaMe[0])
-                Left_GaMe.append(GaMe[2])
-                Left_GaMe.append(GaMe[3])
-                Left_GaMe_Seg = ["Thigh", "Shank", "Calcaneus"]
-            else:
-                Left_GaMe = GaMe
-                Left_GaMe_Seg = GaMe_Seg
-            Right_GaMe = []
-            if RKF > 44:
-                Right_GaMe.append(GaMe[0])
-                Right_GaMe.append(GaMe[2])
-                Right_GaMe.append(GaMe[3])
-                Right_GaMe_Seg = ["Thigh", "Shank", "Calcaneus"]
-            else:
-                Right_GaMe = GaMe
-                Right_GaMe_Seg = GaMe_Seg
-
-            Left_GaMe0 = GaMe
-            Left_GaMe_Seg0 = GaMe_Seg
-            Right_GaMe0 = GaMe
-            Right_GaMe_Seg0 = GaMe_Seg
-
-            [LeftGaMe, LeftGaMeMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                Left_GaMe,
-                Left_GaMe_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightGaMe, RightGaMeMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                Right_GaMe,
-                Right_GaMe_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftGaMe0, LeftGaMeMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                Left_GaMe0,
-                Left_GaMe_Seg0,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightGaMe0, RightGaMeMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                Right_GaMe0,
-                Right_GaMe_Seg0,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            # Remove points depending on knee flexion
-            Left_GaLa = []
-            if LKF > 44:
-                Left_GaLa.append(GaLa[0])
-                Left_GaLa.append(GaLa[2])
-                Left_GaLa.append(GaLa[3])
-                Left_GaLa_Seg = ["Thigh", "Shank", "Calcaneus"]
-            else:
-                Left_GaLa = GaLa
-                Left_GaLa_Seg = GaLa_Seg
-            Right_GaLa = []
-            if RKF > 44:
-                Right_GaLa.append(GaLa[0])
-                Right_GaLa.append(GaLa[2])
-                Right_GaLa.append(GaLa[3])
-                Right_GaLa_Seg = ["Thigh", "Shank", "Calcaneus"]
-            else:
-                Right_GaLa = GaLa
-                Right_GaLa_Seg = GaLa_Seg
-
-            Left_GaLa0 = GaLa
-            Left_GaLa_Seg0 = GaLa_Seg
-            Right_GaLa0 = GaLa
-            Right_GaLa_Seg0 = GaLa_Seg
-
-            [LeftGaLa, LeftGaLaMusclePoints] = math.ComputeMuscleLength(
-                "Left",
-                Left_GaLa,
-                Left_GaLa_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                LeftEThighAnatDelp,
-                LeftThighOriginDelp,
-                LeftEShankAnatDelp,
-                LeftShankOriginDelp,
-                LeftEPatellaAnatDelp,
-                LeftPatellaOriginDelp,
-                LeftECalcaneusAnatDelp,
-                LeftCalcaneusOriginDelp,
-            )
-            [RightGaLa, RightGaLaMusclePoints] = math.ComputeMuscleLength(
-                "Right",
-                Right_GaLa,
-                Right_GaLa_Seg,
-                EPelvisAnatDelp,
-                PelvisOriginDelp,
-                RightEThighAnatDelp,
-                RightThighOriginDelp,
-                RightEShankAnatDelp,
-                RightShankOriginDelp,
-                RightEPatellaAnatDelp,
-                RightPatellaOriginDelp,
-                RightECalcaneusAnatDelp,
-                RightCalcaneusOriginDelp,
-            )
-            [LeftGaLa0, LeftGaLaMusclePoints0] = math.ComputeMuscleLength(
-                "Left",
-                Left_GaLa0,
-                Left_GaLa_Seg0,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                LeftEThighAnatDelp0,
-                LeftThighOriginDelp0,
-                LeftEShankAnatDelp0,
-                LeftShankOriginDelp0,
-                LeftEPatellaAnatDelp0,
-                LeftPatellaOriginDelp0,
-                LeftECalcaneusAnatDelp0,
-                LeftCalcaneusOriginDelp0,
-            )
-            [RightGaLa0, RightGaLaMusclePoints0] = math.ComputeMuscleLength(
-                "Right",
-                Right_GaLa0,
-                Right_GaLa_Seg0,
-                EPelvisAnatDelp0,
-                PelvisOriginDelp0,
-                RightEThighAnatDelp0,
-                RightThighOriginDelp0,
-                RightEShankAnatDelp0,
-                RightShankOriginDelp0,
-                RightEPatellaAnatDelp0,
-                RightPatellaOriginDelp0,
-                RightECalcaneusAnatDelp0,
-                RightCalcaneusOriginDelp0,
-            )
-
-            # Fill Arrays to write Joint Centers to C3D File
-            arrayLeftHipCenter[0][FrameNumber] = Direction * LeftHipCenterLab[0]
-            arrayLeftHipCenter[1][FrameNumber] = Direction * LeftHipCenterLab[1]
-            arrayLeftHipCenter[2][FrameNumber] = LeftHipCenterLab[2]
-
-            arrayRightHipCenter[0][FrameNumber] = Direction * RightHipCenterLab[0]
-            arrayRightHipCenter[1][FrameNumber] = Direction * RightHipCenterLab[1]
-            arrayRightHipCenter[2][FrameNumber] = RightHipCenterLab[2]
-
-            arrayLeftKneeCenter[0][FrameNumber] = Direction * LeftKneeCenterLab[0]
-            arrayLeftKneeCenter[1][FrameNumber] = Direction * LeftKneeCenterLab[1]
-            arrayLeftKneeCenter[2][FrameNumber] = LeftKneeCenterLab[2]
-
-            arrayRightKneeCenter[0][FrameNumber] = Direction * RightKneeCenterLab[0]
-            arrayRightKneeCenter[1][FrameNumber] = Direction * RightKneeCenterLab[1]
-            arrayRightKneeCenter[2][FrameNumber] = RightKneeCenterLab[2]
-
-            arrayLeftAnkleCenter[0][FrameNumber] = Direction * LeftAnkleCenterLab[0]
-            arrayLeftAnkleCenter[1][FrameNumber] = Direction * LeftAnkleCenterLab[1]
-            arrayLeftAnkleCenter[2][FrameNumber] = LeftAnkleCenterLab[2]
-
-            arrayRightAnkleCenter[0][FrameNumber] = Direction * RightAnkleCenterLab[0]
-            arrayRightAnkleCenter[1][FrameNumber] = Direction * RightAnkleCenterLab[1]
-            arrayRightAnkleCenter[2][FrameNumber] = RightAnkleCenterLab[2]
-
-            # ASI, KNE, ANK markers for MAPS
-            arrayLeftASIS[0][FrameNumber] = Direction * LeftASISMarker[0]
-            arrayLeftASIS[1][FrameNumber] = Direction * LeftASISMarker[1]
-            arrayLeftASIS[2][FrameNumber] = LeftASISMarker[2]
-
-            arrayRightASIS[0][FrameNumber] = Direction * RightASISMarker[0]
-            arrayRightASIS[1][FrameNumber] = Direction * RightASISMarker[1]
-            arrayRightASIS[2][FrameNumber] = RightASISMarker[2]
-
-            arrayLeftKNE[0][FrameNumber] = Direction * LeftLateralKneeMarker[0]
-            arrayLeftKNE[1][FrameNumber] = Direction * LeftLateralKneeMarker[1]
-            arrayLeftKNE[2][FrameNumber] = LeftLateralKneeMarker[2]
-
-            arrayRightKNE[0][FrameNumber] = Direction * RightLateralKneeMarker[0]
-            arrayRightKNE[1][FrameNumber] = Direction * RightLateralKneeMarker[1]
-            arrayRightKNE[2][FrameNumber] = RightLateralKneeMarker[2]
-
-            arrayLeftANK[0][FrameNumber] = Direction * LeftLateralAnkleMarker[0]
-            arrayLeftANK[1][FrameNumber] = Direction * LeftLateralAnkleMarker[1]
-            arrayLeftANK[2][FrameNumber] = LeftLateralAnkleMarker[2]
-
-            arrayRightANK[0][FrameNumber] = Direction * RightLateralAnkleMarker[0]
-            arrayRightANK[1][FrameNumber] = Direction * RightLateralAnkleMarker[1]
-            arrayRightANK[2][FrameNumber] = RightLateralAnkleMarker[2]
-
-            # Upper Posterior Calcaneus Marker for SLC
-            if self.valueLeftFootModelCheck == "1":
-                arrayLeftUpperPCAL[0][FrameNumber] = (
-                    Direction * LeftUpperPosteriorCalcaneusMarker[0]
-                )
-                arrayLeftUpperPCAL[1][FrameNumber] = (
-                    Direction * LeftUpperPosteriorCalcaneusMarker[1]
-                )
-                arrayLeftUpperPCAL[2][FrameNumber] = LeftUpperPosteriorCalcaneusMarker[
-                    2
-                ]
-            if self.valueRightFootModelCheck == "1":
-                arrayRightUpperPCAL[0][FrameNumber] = (
-                    Direction * RightUpperPosteriorCalcaneusMarker[0]
-                )
-                arrayRightUpperPCAL[1][FrameNumber] = (
-                    Direction * RightUpperPosteriorCalcaneusMarker[1]
-                )
-                arrayRightUpperPCAL[2][FrameNumber] = (
-                    RightUpperPosteriorCalcaneusMarker[2]
-                )
-            # Pelvis Origin for SLC
-            arrayPelvisOrigin[0][FrameNumber] = (
-                arrayLeftHipCenter[0][FrameNumber] + arrayRightHipCenter[0][FrameNumber]
-            ) / 2
-            arrayPelvisOrigin[1][FrameNumber] = (
-                arrayLeftHipCenter[1][FrameNumber] + arrayRightHipCenter[1][FrameNumber]
-            ) / 2
-            arrayPelvisOrigin[2][FrameNumber] = (
-                arrayLeftHipCenter[2][FrameNumber] + arrayRightHipCenter[2][FrameNumber]
-            ) / 2
-
-            # Fill Arrays to write Segment Angles to C3D File
-            # Left
-            arrayLeftTrunkAngles[0][FrameNumber] = LeftTrunkAnglesDeg[0]
-            arrayLeftTrunkAngles[1][FrameNumber] = LeftTrunkAnglesDeg[1]
-            arrayLeftTrunkAngles[2][FrameNumber] = LeftTrunkAnglesDeg[2]
-
-            arrayLeftTrunkAnglesTOR[0][FrameNumber] = LeftTrunkAnglesTORDeg[0]
-            arrayLeftTrunkAnglesTOR[1][FrameNumber] = LeftTrunkAnglesTORDeg[1]
-            arrayLeftTrunkAnglesTOR[2][FrameNumber] = LeftTrunkAnglesTORDeg[2]
-
-            arrayLeftTrunkAnglesROT[0][FrameNumber] = LeftTrunkAnglesROTDeg[0]
-            arrayLeftTrunkAnglesROT[1][FrameNumber] = LeftTrunkAnglesROTDeg[1]
-            arrayLeftTrunkAnglesROT[2][FrameNumber] = LeftTrunkAnglesROTDeg[2]
-
-            arrayLeftPelvisAngles[0][FrameNumber] = LeftPelvisAnglesDeg[0]
-            arrayLeftPelvisAngles[1][FrameNumber] = LeftPelvisAnglesDeg[1]
-            arrayLeftPelvisAngles[2][FrameNumber] = LeftPelvisAnglesDeg[2]
-
-            arrayLeftPelvisAnglesTOR[0][FrameNumber] = LeftPelvisAnglesTORDeg[0]
-            arrayLeftPelvisAnglesTOR[1][FrameNumber] = LeftPelvisAnglesTORDeg[1]
-            arrayLeftPelvisAnglesTOR[2][FrameNumber] = LeftPelvisAnglesTORDeg[2]
-
-            arrayLeftPelvisAnglesROT[0][FrameNumber] = LeftPelvisAnglesROTDeg[0]
-            arrayLeftPelvisAnglesROT[1][FrameNumber] = LeftPelvisAnglesROTDeg[1]
-            arrayLeftPelvisAnglesROT[2][FrameNumber] = LeftPelvisAnglesROTDeg[2]
-
-            arrayLeftThighAngles[0][FrameNumber] = LeftThighAnglesDeg[0]
-            arrayLeftThighAngles[1][FrameNumber] = LeftThighAnglesDeg[1]
-            arrayLeftThighAngles[2][FrameNumber] = LeftThighAnglesDeg[2]
-
-            arrayLeftShankAngles[0][FrameNumber] = LeftShankAnglesDeg[0]
-            arrayLeftShankAngles[1][FrameNumber] = LeftShankAnglesDeg[1]
-            arrayLeftShankAngles[2][FrameNumber] = LeftShankAnglesDeg[2]
-
-            arrayLeftFootAngles[0][FrameNumber] = LeftFootAnglesDeg[0]
-            arrayLeftFootAngles[1][FrameNumber] = LeftFootAnglesDeg[1]
-            arrayLeftFootAngles[2][FrameNumber] = LeftFootAnglesDeg[2]
-
-            if self.valueLeftFootModelCheck == "1":
-                arrayLeftHindfootAngles[0][FrameNumber] = (
-                    LeftHindfootAnglesRelHFProgressionDeg[0]
-                )
-                arrayLeftHindfootAngles[1][FrameNumber] = (
-                    LeftHindfootAnglesRelHFProgressionDeg[1]
-                )
-                # arrayLeftHindfootAngles[0][FrameNumber] = LeftHindfootAnglesDeg[0]
-                # arrayLeftHindfootAngles[1][FrameNumber] = LeftHindfootAnglesDeg[1]
-                arrayLeftHindfootAngles[2][FrameNumber] = LeftHindfootAnglesDeg[2]
-
-                arrayLeftForefootAngles[0][FrameNumber] = (
-                    LeftForefootAnglesRelHFProgressionDeg[0]
-                )
-                arrayLeftForefootAngles[1][FrameNumber] = (
-                    LeftForefootAnglesRelHFProgressionDeg[1]
-                )
-                # arrayLeftForefootAngles[0][FrameNumber] = LeftForefootAnglesDeg[0]
-                # arrayLeftForefootAngles[1][FrameNumber] = LeftForefootAnglesDeg[1]
-                arrayLeftForefootAngles[2][FrameNumber] = LeftForefootAnglesDeg[2]
-
-                arrayLeftHalluxAngles[0][FrameNumber] = (
-                    LeftHalluxAnglesRelHFProgressionDeg[0]
-                )
-                arrayLeftHalluxAngles[1][FrameNumber] = (
-                    LeftHalluxAnglesRelHFProgressionDeg[1]
-                )
-                # arrayLeftHalluxAngles[0][FrameNumber] = LeftHalluxAnglesDeg[0]
-                # arrayLeftHalluxAngles[1][FrameNumber] = LeftHalluxAnglesDeg[1]
-                arrayLeftHalluxAngles[2][FrameNumber] = LeftHalluxAnglesDeg[2]
-
-            # Left Angles in Radians
-            arrayLeftTrunkAnglesRad[0][FrameNumber] = LeftTrunkAnglesRad[0]
-            arrayLeftTrunkAnglesRad[1][FrameNumber] = LeftTrunkAnglesRad[1]
-            arrayLeftTrunkAnglesRad[2][FrameNumber] = LeftTrunkAnglesRad[2]
-
-            arrayLeftPelvisAnglesRad[0][FrameNumber] = LeftPelvisAnglesRad[0]
-            arrayLeftPelvisAnglesRad[1][FrameNumber] = LeftPelvisAnglesRad[1]
-            arrayLeftPelvisAnglesRad[2][FrameNumber] = LeftPelvisAnglesRad[2]
-
-            arrayLeftThighAnglesRad[0][FrameNumber] = LeftThighAnglesRad[0]
-            arrayLeftThighAnglesRad[1][FrameNumber] = LeftThighAnglesRad[1]
-            arrayLeftThighAnglesRad[2][FrameNumber] = LeftThighAnglesRad[2]
-
-            arrayLeftShankAnglesRad[0][FrameNumber] = LeftShankAnglesRad[0]
-            arrayLeftShankAnglesRad[1][FrameNumber] = LeftShankAnglesRad[1]
-            arrayLeftShankAnglesRad[2][FrameNumber] = LeftShankAnglesRad[2]
-
-            arrayLeftFootAnglesRad[0][FrameNumber] = LeftFootAnglesRad[0]
-            arrayLeftFootAnglesRad[1][FrameNumber] = LeftFootAnglesRad[1]
-            arrayLeftFootAnglesRad[2][FrameNumber] = LeftFootAnglesRad[2]
-
-            if self.valueLeftFootModelCheck == "1":
-                arrayLeftHindfootAnglesRad[0][FrameNumber] = LeftHindfootAnglesRad[0]
-                arrayLeftHindfootAnglesRad[1][FrameNumber] = LeftHindfootAnglesRad[1]
-                arrayLeftHindfootAnglesRad[2][FrameNumber] = LeftHindfootAnglesRad[2]
-
-                arrayLeftForefootAnglesRad[0][FrameNumber] = LeftForefootAnglesRad[0]
-                arrayLeftForefootAnglesRad[1][FrameNumber] = LeftForefootAnglesRad[1]
-                arrayLeftForefootAnglesRad[2][FrameNumber] = LeftForefootAnglesRad[2]
-
-                arrayLeftHalluxAnglesRad[0][FrameNumber] = LeftHalluxAnglesRad[0]
-                arrayLeftHalluxAnglesRad[1][FrameNumber] = LeftHalluxAnglesRad[1]
-                arrayLeftHalluxAnglesRad[2][FrameNumber] = LeftHalluxAnglesRad[2]
-
-            # Right
-            arrayRightTrunkAngles[0][FrameNumber] = RightTrunkAnglesDeg[0]
-            arrayRightTrunkAngles[1][FrameNumber] = RightTrunkAnglesDeg[1]
-            arrayRightTrunkAngles[2][FrameNumber] = RightTrunkAnglesDeg[2]
-
-            arrayRightTrunkAnglesTOR[0][FrameNumber] = RightTrunkAnglesTORDeg[0]
-            arrayRightTrunkAnglesTOR[1][FrameNumber] = RightTrunkAnglesTORDeg[1]
-            arrayRightTrunkAnglesTOR[2][FrameNumber] = RightTrunkAnglesTORDeg[2]
-
-            arrayRightTrunkAnglesROT[0][FrameNumber] = RightTrunkAnglesROTDeg[0]
-            arrayRightTrunkAnglesROT[1][FrameNumber] = RightTrunkAnglesROTDeg[1]
-            arrayRightTrunkAnglesROT[2][FrameNumber] = RightTrunkAnglesROTDeg[2]
-
-            arrayRightPelvisAngles[0][FrameNumber] = RightPelvisAnglesDeg[0]
-            arrayRightPelvisAngles[1][FrameNumber] = RightPelvisAnglesDeg[1]
-            arrayRightPelvisAngles[2][FrameNumber] = RightPelvisAnglesDeg[2]
-
-            arrayRightPelvisAnglesTOR[0][FrameNumber] = RightPelvisAnglesTORDeg[0]
-            arrayRightPelvisAnglesTOR[1][FrameNumber] = RightPelvisAnglesTORDeg[1]
-            arrayRightPelvisAnglesTOR[2][FrameNumber] = RightPelvisAnglesTORDeg[2]
-
-            arrayRightPelvisAnglesROT[0][FrameNumber] = RightPelvisAnglesROTDeg[0]
-            arrayRightPelvisAnglesROT[1][FrameNumber] = RightPelvisAnglesROTDeg[1]
-            arrayRightPelvisAnglesROT[2][FrameNumber] = RightPelvisAnglesROTDeg[2]
-
-            arrayRightThighAngles[0][FrameNumber] = RightThighAnglesDeg[0]
-            arrayRightThighAngles[1][FrameNumber] = RightThighAnglesDeg[1]
-            arrayRightThighAngles[2][FrameNumber] = RightThighAnglesDeg[2]
-
-            arrayRightShankAngles[0][FrameNumber] = RightShankAnglesDeg[0]
-            arrayRightShankAngles[1][FrameNumber] = RightShankAnglesDeg[1]
-            arrayRightShankAngles[2][FrameNumber] = RightShankAnglesDeg[2]
-
-            arrayRightFootAngles[0][FrameNumber] = RightFootAnglesDeg[0]
-            arrayRightFootAngles[1][FrameNumber] = RightFootAnglesDeg[1]
-            arrayRightFootAngles[2][FrameNumber] = RightFootAnglesDeg[2]
-
-            if self.valueRightFootModelCheck == "1":
-                arrayRightHindfootAngles[0][FrameNumber] = (
-                    RightHindfootAnglesRelHFProgressionDeg[0]
-                )
-                arrayRightHindfootAngles[1][FrameNumber] = (
-                    RightHindfootAnglesRelHFProgressionDeg[1]
-                )
-                # arrayRightHindfootAngles[0][FrameNumber] = RightHindfootAnglesDeg[0]
-                # arrayRightHindfootAngles[1][FrameNumber] = RightHindfootAnglesDeg[1]
-                arrayRightHindfootAngles[2][FrameNumber] = RightHindfootAnglesDeg[2]
-
-                arrayRightForefootAngles[0][FrameNumber] = (
-                    RightForefootAnglesRelHFProgressionDeg[0]
-                )
-                arrayRightForefootAngles[1][FrameNumber] = (
-                    RightForefootAnglesRelHFProgressionDeg[1]
-                )
-                # arrayRightForefootAngles[0][FrameNumber] = RightForefootAnglesDeg[0]
-                # arrayRightForefootAngles[1][FrameNumber] = RightForefootAnglesDeg[1]
-                arrayRightForefootAngles[2][FrameNumber] = RightForefootAnglesDeg[2]
-
-                arrayRightHalluxAngles[0][FrameNumber] = (
-                    RightHalluxAnglesRelHFProgressionDeg[0]
-                )
-                arrayRightHalluxAngles[1][FrameNumber] = (
-                    RightHalluxAnglesRelHFProgressionDeg[1]
-                )
-                # arrayRightHalluxAngles[0][FrameNumber] = RightHalluxAnglesDeg[0]
-                # arrayRightHalluxAngles[1][FrameNumber] = RightHalluxAnglesDeg[1]
-                arrayRightHalluxAngles[2][FrameNumber] = RightHalluxAnglesDeg[2]
-
-            # Right Angles in Radians
-            arrayRightTrunkAnglesRad[0][FrameNumber] = RightTrunkAnglesRad[0]
-            arrayRightTrunkAnglesRad[1][FrameNumber] = RightTrunkAnglesRad[1]
-            arrayRightTrunkAnglesRad[2][FrameNumber] = RightTrunkAnglesRad[2]
-
-            arrayRightPelvisAnglesRad[0][FrameNumber] = RightPelvisAnglesRad[0]
-            arrayRightPelvisAnglesRad[1][FrameNumber] = RightPelvisAnglesRad[1]
-            arrayRightPelvisAnglesRad[2][FrameNumber] = RightPelvisAnglesRad[2]
-
-            arrayRightThighAnglesRad[0][FrameNumber] = RightThighAnglesRad[0]
-            arrayRightThighAnglesRad[1][FrameNumber] = RightThighAnglesRad[1]
-            arrayRightThighAnglesRad[2][FrameNumber] = RightThighAnglesRad[2]
-
-            arrayRightShankAnglesRad[0][FrameNumber] = RightShankAnglesRad[0]
-            arrayRightShankAnglesRad[1][FrameNumber] = RightShankAnglesRad[1]
-            arrayRightShankAnglesRad[2][FrameNumber] = RightShankAnglesRad[2]
-
-            arrayRightFootAnglesRad[0][FrameNumber] = RightFootAnglesRad[0]
-            arrayRightFootAnglesRad[1][FrameNumber] = RightFootAnglesRad[1]
-            arrayRightFootAnglesRad[2][FrameNumber] = RightFootAnglesRad[2]
-
-            if self.valueRightFootModelCheck == "1":
-                arrayRightHindfootAnglesRad[0][FrameNumber] = RightHindfootAnglesRad[0]
-                arrayRightHindfootAnglesRad[1][FrameNumber] = RightHindfootAnglesRad[1]
-                arrayRightHindfootAnglesRad[2][FrameNumber] = RightHindfootAnglesRad[2]
-
-                arrayRightForefootAnglesRad[0][FrameNumber] = RightForefootAnglesRad[0]
-                arrayRightForefootAnglesRad[1][FrameNumber] = RightForefootAnglesRad[1]
-                arrayRightForefootAnglesRad[2][FrameNumber] = RightForefootAnglesRad[2]
-
-                arrayRightHalluxAnglesRad[0][FrameNumber] = RightHalluxAnglesRad[0]
-                arrayRightHalluxAnglesRad[1][FrameNumber] = RightHalluxAnglesRad[1]
-                arrayRightHalluxAnglesRad[2][FrameNumber] = RightHalluxAnglesRad[2]
-
-            # Fill Arrays to write Joint Angles to C3D File
-            # Left
-            arrayLeftHipAngles[0][FrameNumber] = LeftHipAnglesDeg[0]
-            arrayLeftHipAngles[1][FrameNumber] = LeftHipAnglesDeg[1]
-            arrayLeftHipAngles[2][FrameNumber] = LeftHipAnglesDeg[2]
-
-            arrayLeftKneeAngles[0][FrameNumber] = LeftKneeAnglesDeg[0]
-            arrayLeftKneeAngles[1][FrameNumber] = LeftKneeAnglesDeg[1]
-            arrayLeftKneeAngles[2][FrameNumber] = LeftKneeAnglesDeg[2]
-
-            arrayLeftKneeAnglesProximal[0][FrameNumber] = LeftKneeAnglesProximalDeg[0]
-            arrayLeftKneeAnglesProximal[1][FrameNumber] = LeftKneeAnglesProximalDeg[1]
-            arrayLeftKneeAnglesProximal[2][FrameNumber] = LeftKneeAnglesProximalDeg[2]
-
-            arrayLeftKneeAnglesDistal[0][FrameNumber] = LeftKneeAnglesDistalDeg[0]
-            arrayLeftKneeAnglesDistal[1][FrameNumber] = LeftKneeAnglesDistalDeg[1]
-            arrayLeftKneeAnglesDistal[2][FrameNumber] = LeftKneeAnglesDistalDeg[2]
-
-            arrayLeftAnkleAngles[0][FrameNumber] = LeftAnkleAnglesDeg[0]
-            arrayLeftAnkleAngles[1][FrameNumber] = LeftAnkleAnglesDeg[1]
-            arrayLeftAnkleAngles[2][FrameNumber] = LeftAnkleAnglesDeg[2]
-
-            if self.valueLeftFootModelCheck == "1":
-                arrayLeftAnkleComplexAngles[0][FrameNumber] = LeftAnkleComplexAnglesDeg[
-                    0
-                ]
-                arrayLeftAnkleComplexAngles[1][FrameNumber] = LeftAnkleComplexAnglesDeg[
-                    1
-                ]
-                arrayLeftAnkleComplexAngles[2][FrameNumber] = LeftAnkleComplexAnglesDeg[
-                    2
-                ]
-
-                arrayLeftMidfootAngles[0][FrameNumber] = LeftMidfootAnglesDeg[0]
-                arrayLeftMidfootAngles[1][FrameNumber] = LeftMidfootAnglesDeg[1]
-                arrayLeftMidfootAngles[2][FrameNumber] = LeftMidfootAnglesDeg[2]
-
-                arrayLeftToesAngles[0][FrameNumber] = LeftToesAnglesDeg[0]
-                arrayLeftToesAngles[1][FrameNumber] = LeftToesAnglesDeg[1]
-                arrayLeftToesAngles[2][FrameNumber] = LeftToesAnglesDeg[2]
-
-                arraySupination[0][FrameNumber] = np.cos(45 * np.pi / 180) * (
-                    LeftMidfootAnglesDeg[2] + LeftAnkleComplexAnglesDeg[0]
-                )
-                arraySkew[0][FrameNumber] = np.cos(45 * np.pi / 180) * (
-                    LeftMidfootAnglesDeg[2] - LeftAnkleComplexAnglesDeg[0]
-                )
-
-            # Left Joint Angles in Radians
-            arrayLeftHipAnglesRad[0][FrameNumber] = LeftHipAnglesRad[0]
-            arrayLeftHipAnglesRad[1][FrameNumber] = LeftHipAnglesRad[1]
-            arrayLeftHipAnglesRad[2][FrameNumber] = LeftHipAnglesRad[2]
-
-            arrayLeftKneeAnglesRad[0][FrameNumber] = LeftKneeAnglesRad[0]
-            arrayLeftKneeAnglesRad[1][FrameNumber] = LeftKneeAnglesRad[1]
-            arrayLeftKneeAnglesRad[2][FrameNumber] = LeftKneeAnglesRad[2]
-
-            arrayLeftAnkleAnglesRad[0][FrameNumber] = LeftAnkleAnglesRad[0]
-            arrayLeftAnkleAnglesRad[1][FrameNumber] = LeftAnkleAnglesRad[1]
-            arrayLeftAnkleAnglesRad[2][FrameNumber] = LeftAnkleAnglesRad[2]
-
-            if self.valueLeftFootModelCheck == "1":
-                arrayLeftAnkleComplexAnglesRad[0][FrameNumber] = (
-                    LeftAnkleComplexAnglesRad[0]
-                )
-                arrayLeftAnkleComplexAnglesRad[1][FrameNumber] = (
-                    LeftAnkleComplexAnglesRad[1]
-                )
-                arrayLeftAnkleComplexAnglesRad[2][FrameNumber] = (
-                    LeftAnkleComplexAnglesRad[2]
-                )
-
-                arrayLeftMidfootAnglesRad[0][FrameNumber] = LeftMidfootAnglesRad[0]
-                arrayLeftMidfootAnglesRad[1][FrameNumber] = LeftMidfootAnglesRad[1]
-                arrayLeftMidfootAnglesRad[2][FrameNumber] = LeftMidfootAnglesRad[2]
-
-                arrayLeftToesAnglesRad[0][FrameNumber] = LeftToesAnglesRad[0]
-                arrayLeftToesAnglesRad[1][FrameNumber] = LeftToesAnglesRad[1]
-                arrayLeftToesAnglesRad[2][FrameNumber] = LeftToesAnglesRad[2]
-
-            # Right
-            arrayRightHipAngles[0][FrameNumber] = RightHipAnglesDeg[0]
-            arrayRightHipAngles[1][FrameNumber] = RightHipAnglesDeg[1]
-            arrayRightHipAngles[2][FrameNumber] = RightHipAnglesDeg[2]
-
-            arrayRightKneeAngles[0][FrameNumber] = RightKneeAnglesDeg[0]
-            arrayRightKneeAngles[1][FrameNumber] = RightKneeAnglesDeg[1]
-            arrayRightKneeAngles[2][FrameNumber] = RightKneeAnglesDeg[2]
-
-            arrayRightKneeAnglesProximal[0][FrameNumber] = RightKneeAnglesProximalDeg[0]
-            arrayRightKneeAnglesProximal[1][FrameNumber] = RightKneeAnglesProximalDeg[1]
-            arrayRightKneeAnglesProximal[2][FrameNumber] = RightKneeAnglesProximalDeg[2]
-
-            arrayRightKneeAnglesDistal[0][FrameNumber] = RightKneeAnglesDistalDeg[0]
-            arrayRightKneeAnglesDistal[1][FrameNumber] = RightKneeAnglesDistalDeg[1]
-            arrayRightKneeAnglesDistal[2][FrameNumber] = RightKneeAnglesDistalDeg[2]
-
-            arrayRightAnkleAngles[0][FrameNumber] = RightAnkleAnglesDeg[0]
-            arrayRightAnkleAngles[1][FrameNumber] = RightAnkleAnglesDeg[1]
-            arrayRightAnkleAngles[2][FrameNumber] = RightAnkleAnglesDeg[2]
-
-            if self.valueRightFootModelCheck == "1":
-                arrayRightAnkleComplexAngles[0][FrameNumber] = (
-                    RightAnkleComplexAnglesDeg[0]
-                )
-                arrayRightAnkleComplexAngles[1][FrameNumber] = (
-                    RightAnkleComplexAnglesDeg[1]
-                )
-                arrayRightAnkleComplexAngles[2][FrameNumber] = (
-                    RightAnkleComplexAnglesDeg[2]
-                )
-
-                arrayRightMidfootAngles[0][FrameNumber] = RightMidfootAnglesDeg[0]
-                arrayRightMidfootAngles[1][FrameNumber] = RightMidfootAnglesDeg[1]
-                arrayRightMidfootAngles[2][FrameNumber] = RightMidfootAnglesDeg[2]
-
-                arrayRightToesAngles[0][FrameNumber] = RightToesAnglesDeg[0]
-                arrayRightToesAngles[1][FrameNumber] = RightToesAnglesDeg[1]
-                arrayRightToesAngles[2][FrameNumber] = RightToesAnglesDeg[2]
-
-                arraySupination[1][FrameNumber] = np.cos(45 * np.pi / 180) * (
-                    RightMidfootAnglesDeg[2] + RightAnkleComplexAnglesDeg[0]
-                )
-                arraySkew[1][FrameNumber] = np.cos(45 * np.pi / 180) * (
-                    RightMidfootAnglesDeg[2] - RightAnkleComplexAnglesDeg[0]
-                )
-
-            # Right Joint Angles in Radians
-            arrayRightHipAnglesRad[0][FrameNumber] = RightHipAnglesRad[0]
-            arrayRightHipAnglesRad[1][FrameNumber] = RightHipAnglesRad[1]
-            arrayRightHipAnglesRad[2][FrameNumber] = RightHipAnglesRad[2]
-
-            arrayRightKneeAnglesRad[0][FrameNumber] = RightKneeAnglesRad[0]
-            arrayRightKneeAnglesRad[1][FrameNumber] = RightKneeAnglesRad[1]
-            arrayRightKneeAnglesRad[2][FrameNumber] = RightKneeAnglesRad[2]
-
-            arrayRightAnkleAnglesRad[0][FrameNumber] = RightAnkleAnglesRad[0]
-            arrayRightAnkleAnglesRad[1][FrameNumber] = RightAnkleAnglesRad[1]
-            arrayRightAnkleAnglesRad[2][FrameNumber] = RightAnkleAnglesRad[2]
-
-            if self.valueRightFootModelCheck == "1":
-                arrayRightAnkleComplexAnglesRad[0][FrameNumber] = (
-                    RightAnkleComplexAnglesRad[0]
-                )
-                arrayRightAnkleComplexAnglesRad[1][FrameNumber] = (
-                    RightAnkleComplexAnglesRad[1]
-                )
-                arrayRightAnkleComplexAnglesRad[2][FrameNumber] = (
-                    RightAnkleComplexAnglesRad[2]
-                )
-
-                arrayRightMidfootAnglesRad[0][FrameNumber] = RightMidfootAnglesRad[0]
-                arrayRightMidfootAnglesRad[1][FrameNumber] = RightMidfootAnglesRad[1]
-                arrayRightMidfootAnglesRad[2][FrameNumber] = RightMidfootAnglesRad[2]
-
-                arrayRightToesAnglesRad[0][FrameNumber] = RightToesAnglesRad[0]
-                arrayRightToesAnglesRad[1][FrameNumber] = RightToesAnglesRad[1]
-                arrayRightToesAnglesRad[2][FrameNumber] = RightToesAnglesRad[2]
-
-            # Fill Arrays to write Muscle Length in C3D File
-            arrayGluteusMaxLength[0][FrameNumber] = (LeftGMaS + LeftGMaM + LeftGMaI) / (
-                LeftGMaS0 + LeftGMaM0 + LeftGMaI0
-            )
-            arrayGluteusMaxLength[1][FrameNumber] = (
-                RightGMaS + RightGMaM + RightGMaI
-            ) / (RightGMaS0 + RightGMaM0 + RightGMaI0)
-
-            arrayIlioPsoasLength[0][FrameNumber] = (LeftIlia + LeftPsoa) / (
-                LeftIlia0 + LeftPsoa0
-            )
-            arrayIlioPsoasLength[1][FrameNumber] = (RightIlia + RightPsoa) / (
-                RightIlia0 + RightPsoa0
-            )
-
-            arrayRectFemLength[0][FrameNumber] = LeftReFe / LeftReFe0
-            arrayRectFemLength[1][FrameNumber] = RightReFe / RightReFe0
-
-            arrayMedHamstringLength[0][FrameNumber] = (LeftSeMe + LeftSeTe) / (
-                LeftSeMe0 + LeftSeTe0
-            )
-            arrayMedHamstringLength[1][FrameNumber] = (RightSeMe + RightSeTe) / (
-                RightSeMe0 + RightSeTe0
-            )
-
-            arrayLatHamstringLength[0][FrameNumber] = (LeftBiFL + LeftBiFS) / (
-                LeftBiFL0 + LeftBiFS0
-            )
-            arrayLatHamstringLength[1][FrameNumber] = (RightBiFL + RightBiFS) / (
-                RightBiFL0 + RightBiFS0
-            )
-
-            arrayGastrocLength[0][FrameNumber] = (LeftGaMe + LeftGaLa) / (
-                LeftGaMe0 + LeftGaLa0
-            )
-            arrayGastrocLength[1][FrameNumber] = (RightGaMe + RightGaLa) / (
-                RightGaMe0 + RightGaLa0
-            )
-
-            arraySoleusLength[0][FrameNumber] = LeftSole / LeftSole0
-            arraySoleusLength[1][FrameNumber] = RightSole / RightSole0
-
-            arrayTibPostLength[0][FrameNumber] = LeftTiPo / LeftTiPo0
-            arrayTibPostLength[1][FrameNumber] = RightTiPo / RightTiPo0
-
-            arrayPeronealLength[0][FrameNumber] = (LeftPeBr + LeftPeLn) / (
-                LeftPeBr0 + LeftPeLn0
-            )
-            arrayPeronealLength[1][FrameNumber] = (RightPeBr + RightPeLn) / (
-                RightPeBr0 + RightPeLn0
-            )
-
-            arrayVastusLatLength[0][FrameNumber] = LeftVaLa / LeftVaLa0
-            arrayVastusLatLength[1][FrameNumber] = RightVaLa / RightVaLa0
-
-            # Compute locations of segmental centers of mass
-            if TrunkFlag == 1:
-                HATCenterOfMass = math.MassCenter(
-                    ShouldersCenterLab, PelvisCenterLab, 0.374
-                )
-            else:
-                HATCenterOfMass = np.array([0.0, 0.0, 0.0])
-            LeftThighCenterOfMass = math.MassCenter(
-                LeftHipCenterLab, LeftKneeCenterLab, 0.567
-            )
-            LeftShankCenterOfMass = math.MassCenter(
-                LeftKneeCenterLab,
-                LeftAnkleCenterLab,
-                0.567,
-            )
-            LeftFootCenterOfMass = math.MassCenter(
-                LeftAnkleCenterLab, LeftToeMarker, 0.5
-            )
-            RightThighCenterOfMass = math.MassCenter(
-                RightHipCenterLab, RightKneeCenterLab, 0.567
-            )
-            RightShankCenterOfMass = math.MassCenter(
-                RightKneeCenterLab,
-                RightAnkleCenterLab,
-                0.567,
-            )
-            RightFootCenterOfMass = math.MassCenter(
-                RightAnkleCenterLab, RightToeMarker, 0.5
-            )
-
-            # Store Center of Mass in 3D Array
-            arrayHATCenterOfMass[0][FrameNumber] = Direction * HATCenterOfMass[0]
-            arrayHATCenterOfMass[1][FrameNumber] = Direction * HATCenterOfMass[1]
-            arrayHATCenterOfMass[2][FrameNumber] = HATCenterOfMass[2]
-
-            arrayLeftThighCenterOfMass[0][FrameNumber] = (
-                Direction * LeftThighCenterOfMass[0]
-            )
-            arrayLeftThighCenterOfMass[1][FrameNumber] = (
-                Direction * LeftThighCenterOfMass[1]
-            )
-            arrayLeftThighCenterOfMass[2][FrameNumber] = LeftThighCenterOfMass[2]
-
-            arrayLeftShankCenterOfMass[0][FrameNumber] = (
-                Direction * LeftShankCenterOfMass[0]
-            )
-            arrayLeftShankCenterOfMass[1][FrameNumber] = (
-                Direction * LeftShankCenterOfMass[1]
-            )
-            arrayLeftShankCenterOfMass[2][FrameNumber] = LeftShankCenterOfMass[2]
-
-            arrayLeftFootCenterOfMass[0][FrameNumber] = (
-                Direction * LeftFootCenterOfMass[0]
-            )
-            arrayLeftFootCenterOfMass[1][FrameNumber] = (
-                Direction * LeftFootCenterOfMass[1]
-            )
-            arrayLeftFootCenterOfMass[2][FrameNumber] = LeftFootCenterOfMass[2]
-
-            arrayRightThighCenterOfMass[0][FrameNumber] = (
-                Direction * RightThighCenterOfMass[0]
-            )
-            arrayRightThighCenterOfMass[1][FrameNumber] = (
-                Direction * RightThighCenterOfMass[1]
-            )
-            arrayRightThighCenterOfMass[2][FrameNumber] = RightThighCenterOfMass[2]
-
-            arrayRightShankCenterOfMass[0][FrameNumber] = (
-                Direction * RightShankCenterOfMass[0]
-            )
-            arrayRightShankCenterOfMass[1][FrameNumber] = (
-                Direction * RightShankCenterOfMass[1]
-            )
-            arrayRightShankCenterOfMass[2][FrameNumber] = RightShankCenterOfMass[2]
-
-            arrayRightFootCenterOfMass[0][FrameNumber] = (
-                Direction * RightFootCenterOfMass[0]
-            )
-            arrayRightFootCenterOfMass[1][FrameNumber] = (
-                Direction * RightFootCenterOfMass[1]
-            )
-            arrayRightFootCenterOfMass[2][FrameNumber] = RightFootCenterOfMass[2]
+        print(f"[DynamicMain] __init__ step 6: Batched kinematics for frames {StartFrame} to {EndFrame}...", flush=True)
+        # Batched kinematics, muscle paths and center of mass.
+        _batch_frames = np.arange(StartFrame, EndFrame)
+        _batch_slice = slice(StartFrame, EndFrame)
+        _batch_count = len(_batch_frames)
+        C7Marker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(C7MarkerX)[_batch_slice], Direction *
+            np.asarray(C7MarkerY)[_batch_slice], np.asarray(C7MarkerZ)[_batch_slice])
+        )
+        LeftClavicleMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(LeftClavicleMarkerX)[_batch_slice],
+            Direction * np.asarray(LeftClavicleMarkerY)[_batch_slice],
+            np.asarray(LeftClavicleMarkerZ)[_batch_slice])
+        )
+        RightClavicleMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(RightClavicleMarkerX)[_batch_slice],
+            Direction * np.asarray(RightClavicleMarkerY)[_batch_slice],
+            np.asarray(RightClavicleMarkerZ)[_batch_slice])
+        )
+        SacralMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(SacralMarkerX)[_batch_slice], Direction *
+            np.asarray(SacralMarkerY)[_batch_slice], np.asarray(SacralMarkerZ)[_batch_slice])
+        )
+        LeftASISMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(LeftASISMarkerX)[_batch_slice], Direction *
+            np.asarray(LeftASISMarkerY)[_batch_slice], np.asarray(LeftASISMarkerZ)[_batch_slice])
+        )
+        LeftThighMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(LeftThighMarkerX)[_batch_slice], Direction *
+            np.asarray(LeftThighMarkerY)[_batch_slice], np.asarray(LeftThighMarkerZ)[_batch_slice])
+        )
+        LeftLateralKneeMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(LeftLateralKneeMarkerX)[_batch_slice],
+            Direction * np.asarray(LeftLateralKneeMarkerY)[_batch_slice],
+            np.asarray(LeftLateralKneeMarkerZ)[_batch_slice])
+        )
+        LeftTibialMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(LeftTibialMarkerX)[_batch_slice], Direction *
+            np.asarray(LeftTibialMarkerY)[_batch_slice], np.asarray(LeftTibialMarkerZ)[_batch_slice])
+        )
+        if LeftTibialTriadCheck is True:
+            LeftTibialUpperMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftTibialUpperMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftTibialUpperMarkerY)[_batch_slice],
+                np.asarray(LeftTibialUpperMarkerZ)[_batch_slice])
+            )
+            LeftTibialLowerMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftTibialLowerMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftTibialLowerMarkerY)[_batch_slice],
+                np.asarray(LeftTibialLowerMarkerZ)[_batch_slice])
+            )
+        LeftLateralAnkleMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(LeftLateralAnkleMarkerX)[_batch_slice],
+            Direction * np.asarray(LeftLateralAnkleMarkerY)[_batch_slice],
+            np.asarray(LeftLateralAnkleMarkerZ)[_batch_slice])
+        )
+        LeftToeMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(LeftToeMarkerX)[_batch_slice], Direction *
+            np.asarray(LeftToeMarkerY)[_batch_slice], np.asarray(LeftToeMarkerZ)[_batch_slice])
+        )
+        LeftMedialAnkleMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(LeftMedialAnkleMarkerX)[_batch_slice],
+            Direction * np.asarray(LeftMedialAnkleMarkerY)[_batch_slice],
+            np.asarray(LeftMedialAnkleMarkerZ)[_batch_slice])
+        )
+        LeftHeelMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(LeftHeelMarkerX)[_batch_slice], Direction *
+            np.asarray(LeftHeelMarkerY)[_batch_slice], np.asarray(LeftHeelMarkerZ)[_batch_slice])
+        )
+        if self.valueLeftFootModelCheck == '1':
+            LeftLateralCalcaneusMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftLateralCalcaneusMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftLateralCalcaneusMarkerY)[_batch_slice],
+                np.asarray(LeftLateralCalcaneusMarkerZ)[_batch_slice])
+            )
+            LeftMedialCalcaneusMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftMedialCalcaneusMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftMedialCalcaneusMarkerY)[_batch_slice],
+                np.asarray(LeftMedialCalcaneusMarkerZ)[_batch_slice])
+            )
+            LeftPosteriorCalcaneusMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftPosteriorCalcaneusMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftPosteriorCalcaneusMarkerY)[_batch_slice],
+                np.asarray(LeftPosteriorCalcaneusMarkerZ)[_batch_slice])
+            )
+            LeftFirstMetarsalBaseMarker = (
+                math.FrameVector(_batch_count, np.asarray(LeftFirstMetarsalBaseMarkerX)[_batch_slice],
+                np.asarray(LeftFirstMetarsalBaseMarkerY)[_batch_slice],
+                np.asarray(LeftFirstMetarsalBaseMarkerZ)[_batch_slice])
+            )
+            LeftFirstMetarsalHeadMarker = (
+                math.FrameVector(_batch_count, np.asarray(LeftFirstMetarsalHeadMarkerX)[_batch_slice],
+                np.asarray(LeftFirstMetarsalHeadMarkerY)[_batch_slice],
+                np.asarray(LeftFirstMetarsalHeadMarkerZ)[_batch_slice])
+            )
+            LeftFifthMetarsalHeadMarker = (
+                math.FrameVector(_batch_count, np.asarray(LeftFifthMetarsalHeadMarkerX)[_batch_slice],
+                np.asarray(LeftFifthMetarsalHeadMarkerY)[_batch_slice],
+                np.asarray(LeftFifthMetarsalHeadMarkerZ)[_batch_slice])
+            )
+            LeftEForefootTech = (
+                gait.TechCS_Forefoot_mSHCG('Left', LeftFirstMetarsalBaseMarker, LeftFirstMetarsalHeadMarker,
+                LeftFifthMetarsalHeadMarker)
+            )
+            LeftMTP1MarkerLab = (
+                math.TransformPointIntoLabCoors(self.valueLeftFirstMetatarsoPhalangealJointMarkerForefoot,
+                LeftEForefootTech, LeftFirstMetarsalBaseMarker)
+            )
+            LeftFirstMetatarsoPhalangealJointMarker = (
+                math.FrameVector(_batch_count, Direction * LeftMTP1MarkerLab[..., 0], Direction *
+                LeftMTP1MarkerLab[..., 1], LeftMTP1MarkerLab[..., 2])
+            )
+            LeftFirstMetarsalBaseMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftFirstMetarsalBaseMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftFirstMetarsalBaseMarkerY)[_batch_slice],
+                np.asarray(LeftFirstMetarsalBaseMarkerZ)[_batch_slice])
+            )
+            LeftFirstMetarsalHeadMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftFirstMetarsalHeadMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftFirstMetarsalHeadMarkerY)[_batch_slice],
+                np.asarray(LeftFirstMetarsalHeadMarkerZ)[_batch_slice])
+            )
+            LeftFifthMetarsalHeadMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftFifthMetarsalHeadMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftFifthMetarsalHeadMarkerY)[_batch_slice],
+                np.asarray(LeftFifthMetarsalHeadMarkerZ)[_batch_slice])
+            )
+            LeftHalluxMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftHalluxMarkerX)[_batch_slice], Direction *
+                np.asarray(LeftHalluxMarkerY)[_batch_slice], np.asarray(LeftHalluxMarkerZ)[_batch_slice])
+            )
+        RightASISMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(RightASISMarkerX)[_batch_slice], Direction *
+            np.asarray(RightASISMarkerY)[_batch_slice], np.asarray(RightASISMarkerZ)[_batch_slice])
+        )
+        RightThighMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(RightThighMarkerX)[_batch_slice], Direction *
+            np.asarray(RightThighMarkerY)[_batch_slice], np.asarray(RightThighMarkerZ)[_batch_slice])
+        )
+        RightLateralKneeMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(RightLateralKneeMarkerX)[_batch_slice],
+            Direction * np.asarray(RightLateralKneeMarkerY)[_batch_slice],
+            np.asarray(RightLateralKneeMarkerZ)[_batch_slice])
+        )
+        RightTibialMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(RightTibialMarkerX)[_batch_slice], Direction *
+            np.asarray(RightTibialMarkerY)[_batch_slice], np.asarray(RightTibialMarkerZ)[_batch_slice])
+        )
+        if RightTibialTriadCheck is True:
+            RightTibialUpperMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightTibialUpperMarkerX)[_batch_slice],
+                Direction * np.asarray(RightTibialUpperMarkerY)[_batch_slice],
+                np.asarray(RightTibialUpperMarkerZ)[_batch_slice])
+            )
+            RightTibialLowerMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightTibialLowerMarkerX)[_batch_slice],
+                Direction * np.asarray(RightTibialLowerMarkerY)[_batch_slice],
+                np.asarray(RightTibialLowerMarkerZ)[_batch_slice])
+            )
+        RightLateralAnkleMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(RightLateralAnkleMarkerX)[_batch_slice],
+            Direction * np.asarray(RightLateralAnkleMarkerY)[_batch_slice],
+            np.asarray(RightLateralAnkleMarkerZ)[_batch_slice])
+        )
+        RightToeMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(RightToeMarkerX)[_batch_slice], Direction *
+            np.asarray(RightToeMarkerY)[_batch_slice], np.asarray(RightToeMarkerZ)[_batch_slice])
+        )
+        RightMedialAnkleMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(RightMedialAnkleMarkerX)[_batch_slice],
+            Direction * np.asarray(RightMedialAnkleMarkerY)[_batch_slice],
+            np.asarray(RightMedialAnkleMarkerZ)[_batch_slice])
+        )
+        RightHeelMarker = (
+            math.FrameVector(_batch_count, Direction * np.asarray(RightHeelMarkerX)[_batch_slice], Direction *
+            np.asarray(RightHeelMarkerY)[_batch_slice], np.asarray(RightHeelMarkerZ)[_batch_slice])
+        )
+        if self.valueRightFootModelCheck == '1':
+            RightLateralCalcaneusMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightLateralCalcaneusMarkerX)[_batch_slice],
+                Direction * np.asarray(RightLateralCalcaneusMarkerY)[_batch_slice],
+                np.asarray(RightLateralCalcaneusMarkerZ)[_batch_slice])
+            )
+            RightMedialCalcaneusMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightMedialCalcaneusMarkerX)[_batch_slice],
+                Direction * np.asarray(RightMedialCalcaneusMarkerY)[_batch_slice],
+                np.asarray(RightMedialCalcaneusMarkerZ)[_batch_slice])
+            )
+            RightPosteriorCalcaneusMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightPosteriorCalcaneusMarkerX)[_batch_slice],
+                Direction * np.asarray(RightPosteriorCalcaneusMarkerY)[_batch_slice],
+                np.asarray(RightPosteriorCalcaneusMarkerZ)[_batch_slice])
+            )
+            RightFirstMetarsalBaseMarker = (
+                math.FrameVector(_batch_count, np.asarray(RightFirstMetarsalBaseMarkerX)[_batch_slice],
+                np.asarray(RightFirstMetarsalBaseMarkerY)[_batch_slice],
+                np.asarray(RightFirstMetarsalBaseMarkerZ)[_batch_slice])
+            )
+            RightFirstMetarsalHeadMarker = (
+                math.FrameVector(_batch_count, np.asarray(RightFirstMetarsalHeadMarkerX)[_batch_slice],
+                np.asarray(RightFirstMetarsalHeadMarkerY)[_batch_slice],
+                np.asarray(RightFirstMetarsalHeadMarkerZ)[_batch_slice])
+            )
+            RightFifthMetarsalHeadMarker = (
+                math.FrameVector(_batch_count, np.asarray(RightFifthMetarsalHeadMarkerX)[_batch_slice],
+                np.asarray(RightFifthMetarsalHeadMarkerY)[_batch_slice],
+                np.asarray(RightFifthMetarsalHeadMarkerZ)[_batch_slice])
+            )
+            RightEForefootTech = (
+                gait.TechCS_Forefoot_mSHCG('Right', RightFirstMetarsalBaseMarker, RightFirstMetarsalHeadMarker,
+                RightFifthMetarsalHeadMarker)
+            )
+            RightMTP1MarkerLab = (
+                math.TransformPointIntoLabCoors(self.valueRightFirstMetatarsoPhalangealJointMarkerForefoot,
+                RightEForefootTech, RightFirstMetarsalBaseMarker)
+            )
+            RightFirstMetatarsoPhalangealJointMarker = (
+                math.FrameVector(_batch_count, Direction * RightMTP1MarkerLab[..., 0], Direction *
+                RightMTP1MarkerLab[..., 1], RightMTP1MarkerLab[..., 2])
+            )
+            RightFirstMetarsalBaseMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightFirstMetarsalBaseMarkerX)[_batch_slice],
+                Direction * np.asarray(RightFirstMetarsalBaseMarkerY)[_batch_slice],
+                np.asarray(RightFirstMetarsalBaseMarkerZ)[_batch_slice])
+            )
+            RightFirstMetarsalHeadMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightFirstMetarsalHeadMarkerX)[_batch_slice],
+                Direction * np.asarray(RightFirstMetarsalHeadMarkerY)[_batch_slice],
+                np.asarray(RightFirstMetarsalHeadMarkerZ)[_batch_slice])
+            )
+            RightFifthMetarsalHeadMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightFifthMetarsalHeadMarkerX)[_batch_slice],
+                Direction * np.asarray(RightFifthMetarsalHeadMarkerY)[_batch_slice],
+                np.asarray(RightFifthMetarsalHeadMarkerZ)[_batch_slice])
+            )
+            RightHalluxMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightHalluxMarkerX)[_batch_slice], Direction *
+                np.asarray(RightHalluxMarkerY)[_batch_slice], np.asarray(RightHalluxMarkerZ)[_batch_slice])
+            )
+        if TrunkFlag == 1:
+            [ETrunkTech, PelvisCenterLab, ShouldersCenterLab] = (
+                gait.TechCS_Trunk_Newington(C7Marker, LeftClavicleMarker, RightClavicleMarker, LeftASISMarker,
+                RightASISMarker, SacralMarker)
+            )
+            ETrunkAnat = math.TransformAnatCoorSysFromTechCoors(self.valueETrunkAnatRelTech, ETrunkTech)
+            ETrunkAnat = ETrunkTech
+        [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(LeftASISMarker, RightASISMarker, SacralMarker)
+        EPelvisAnat = math.TransformAnatCoorSysFromTechCoors(self.valueEPelvisAnatRelTech, EPelvisTech)
+        if self.HipModelName == 'Newington':
+            [LeftHipCenterPelvis, LeftHipCenterLab] = (
+                gait.JointCenterModel_Hip_Newington('Left', self.MarkerDiameter, self.valueASISdist,
+                self.valueLeftASIStoGTdist, self.valueLeftLegLength, self.valueRightLegLength, RightASISMarker,
+                LeftASISMarker, EPelvisTech, MidASISLab)
+            )
+            [RightHipCenterPelvis, RightHipCenterLab] = (
+                gait.JointCenterModel_Hip_Newington('Right', self.MarkerDiameter, self.valueASISdist,
+                self.valueRightASIStoGTdist, self.valueLeftLegLength, self.valueRightLegLength, RightASISMarker,
+                LeftASISMarker, EPelvisTech, MidASISLab)
+            )
+        if self.HipModelName == 'Harrington':
+            [LeftHipCenterPelvis, LeftHipCenterLab] = (
+                gait.JointCenterModel_Hip_Harrington('Left', self.valueASISdist, RightASISMarker, LeftASISMarker,
+                SacralMarker, EPelvisTech, MidASISLab)
+            )
+            [RightHipCenterPelvis, RightHipCenterLab] = (
+                gait.JointCenterModel_Hip_Harrington('Right', self.valueASISdist, RightASISMarker, LeftASISMarker,
+                SacralMarker, EPelvisTech, MidASISLab)
+            )
+        if self.HipModelName == 'Harrington2':
+            [LeftHipCenterPelvis, LeftHipCenterLab] = (
+                gait.JointCenterModel_Hip_Harrington2('Left', self.valueASISdist, self.valueLeftLegLength,
+                self.valueRightLegLength, RightASISMarker, LeftASISMarker, SacralMarker, EPelvisTech, MidASISLab)
+            )
+            [RightHipCenterPelvis, RightHipCenterLab] = (
+                gait.JointCenterModel_Hip_Harrington2('Right', self.valueASISdist, self.valueLeftLegLength,
+                self.valueRightLegLength, RightASISMarker, LeftASISMarker, SacralMarker, EPelvisTech, MidASISLab)
+            )
+        LeftEThighTech = gait.TechCS_Thigh_Newington('Left', LeftHipCenterLab, LeftThighMarker, LeftLateralKneeMarker)
+        RightEThighTech = gait.TechCS_Thigh_Newington('Right', RightHipCenterLab, RightThighMarker, RightLateralKneeMarker)
+        LeftEThighAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEThighAnatRelTech, LeftEThighTech)
+        RightEThighAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEThighAnatRelTech, RightEThighTech)
+        LeftKneeCenterLab = (
+            math.TransformPointIntoLabCoors(self.valueLeftKneeCenterThigh, LeftEThighTech,
+            LeftLateralKneeMarker)
+        )
+        RightKneeCenterLab = (
+            math.TransformPointIntoLabCoors(self.valueRightKneeCenterThigh, RightEThighTech,
+            RightLateralKneeMarker)
+        )
+        if LeftTibialTriadCheck is True:
+            LeftEShankTech = gait.TechCS_Shank_Newington('Left', LeftTibialUpperMarker, LeftTibialLowerMarker, LeftTibialMarker)
+        else:
+            LeftEShankTech = gait.TechCS_Shank_Newington('Left', LeftKneeCenterLab, LeftTibialMarker, LeftLateralAnkleMarker)
+        if RightTibialTriadCheck is True:
+            RightEShankTech = (
+                gait.TechCS_Shank_Newington('Right', RightTibialUpperMarker, RightTibialLowerMarker,
+                RightTibialMarker)
+            )
+        else:
+            RightEShankTech = gait.TechCS_Shank_Newington('Right', RightKneeCenterLab, RightTibialMarker, RightLateralAnkleMarker)
+        if LeftTibialTriadCheck is True:
+            LeftAnkleCenterLab = math.TransformPointIntoLabCoors(self.valueLeftAnkleCenterShank, LeftEShankTech, LeftTibialMarker)
+        else:
+            LeftAnkleCenterLab = (
+                math.TransformPointIntoLabCoors(self.valueLeftAnkleCenterShank, LeftEShankTech,
+                LeftLateralAnkleMarker)
+            )
+        if RightTibialTriadCheck is True:
+            RightAnkleCenterLab = math.TransformPointIntoLabCoors(self.valueRightAnkleCenterShank, RightEShankTech, RightTibialMarker)
+        else:
+            RightAnkleCenterLab = (
+                math.TransformPointIntoLabCoors(self.valueRightAnkleCenterShank, RightEShankTech,
+                RightLateralAnkleMarker)
+            )
+        if LeftMedialAnkleMarkerDropOff == 0:
+            LeftAnkleCenterLab = (
+                gait.JointCenterModel_Ankle_Newington('Left', self.MarkerDiameter, self.valueLeftAnkleWidth,
+                LeftLateralAnkleMarker, LeftMedialAnkleMarker)
+            )
+        if RightMedialAnkleMarkerDropOff == 0:
+            RightAnkleCenterLab = (
+                gait.JointCenterModel_Ankle_Newington('Right', self.MarkerDiameter, self.valueRightAnkleWidth,
+                RightLateralAnkleMarker, RightMedialAnkleMarker)
+            )
+        LeftEFootTech = gait.TechCS_Foot_Newington('Left', LeftKneeCenterLab, LeftAnkleCenterLab, LeftToeMarker)
+        RightEFootTech = gait.TechCS_Foot_Newington('Right', RightKneeCenterLab, RightAnkleCenterLab, RightToeMarker)
+        if self.valueLeftFootModelCheck == '1':
+            LeftEHindfootTech = (
+                gait.TechCS_Hindfoot_mSHCG('Left', LeftLateralCalcaneusMarker, LeftMedialCalcaneusMarker,
+                LeftPosteriorCalcaneusMarker)
+            )
+            LeftEForefootTech = (
+                gait.TechCS_Forefoot_mSHCG('Left', LeftFirstMetarsalBaseMarker, LeftFirstMetarsalHeadMarker,
+                LeftFifthMetarsalHeadMarker)
+            )
+            LeftEHalluxTech = (
+                gait.TechCS_Hallux_mSHCG('Left', LeftHalluxMarker, LeftFirstMetatarsoPhalangealJointMarker,
+                LeftToeMarker)
+            )
+        if self.valueRightFootModelCheck == '1':
+            RightEHindfootTech = (
+                gait.TechCS_Hindfoot_mSHCG('Right', RightLateralCalcaneusMarker, RightMedialCalcaneusMarker,
+                RightPosteriorCalcaneusMarker)
+            )
+            RightEForefootTech = (
+                gait.TechCS_Forefoot_mSHCG('Right', RightFirstMetarsalBaseMarker, RightFirstMetarsalHeadMarker,
+                RightFifthMetarsalHeadMarker)
+            )
+            RightEHalluxTech = (
+                gait.TechCS_Hallux_mSHCG('Right', RightHalluxMarker, RightFirstMetatarsoPhalangealJointMarker,
+                RightToeMarker)
+            )
+        LeftEShankProximalAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEShankProximalAnatRelTech, LeftEShankTech)
+        RightEShankProximalAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEShankProximalAnatRelTech, RightEShankTech)
+        LeftEShankDistalAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEShankDistalAnatRelTech, LeftEShankTech)
+        RightEShankDistalAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEShankDistalAnatRelTech, RightEShankTech)
+        if LeftMedialAnkleMarkerDropOff == 0:
+            LeftEShankProximalAnat = (
+                gait.AnatCS_Shank_Proximal_Newington('Left', LeftKneeCenterLab, LeftLateralKneeMarker,
+                LeftAnkleCenterLab)
+            )
+            LeftEShankDistalAnat = gait.AnatCS_Shank_Distal_VCM('Left', LeftKneeCenterLab, LeftAnkleCenterLab, LeftLateralAnkleMarker)
+        if RightMedialAnkleMarkerDropOff == 0:
+            RightEShankProximalAnat = (
+                gait.AnatCS_Shank_Proximal_Newington('Right', RightKneeCenterLab, RightLateralKneeMarker,
+                RightAnkleCenterLab)
+            )
+            RightEShankDistalAnat = (
+                gait.AnatCS_Shank_Distal_VCM('Right', RightKneeCenterLab, RightAnkleCenterLab,
+                RightLateralAnkleMarker)
+            )
+        LeftEFootAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEFootAnatRelTech, LeftEFootTech)
+        RightEFootAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEFootAnatRelTech, RightEFootTech)
+        try:
+            LeftEFootTibAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEFootAnat2RelTech, LeftEFootTech)
+            RightEFootTibAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEFootAnat2RelTech, RightEFootTech)
+        except:
+            LeftEFootTibAnat = np.matrix([[0.0 for m in range(3)] for n in range(3)])
+            RightEFootTibAnat = np.matrix([[0.0 for m in range(3)] for n in range(3)])
+        if self.valueLeftFootModelCheck == '1':
+            LeftEHindfootAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEHindfootAnatRelTech, LeftEHindfootTech)
+            LeftEForefootAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEForefootAnatRelTech, LeftEForefootTech)
+            LeftEHalluxAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEHalluxAnatRelTech, LeftEHalluxTech)
+            LeftUpperPosteriorCalcaneusHindfoot = (
+                math.FrameVector(_batch_count, np.asarray(arrayLPCALUX)[_batch_slice],
+                np.asarray(arrayLPCALUY)[_batch_slice], np.asarray(arrayLPCALUZ)[_batch_slice])
+            )
+            LeftUpperPosteriorCalcaneusMarker = (
+                math.TransformPointIntoLabCoors(LeftUpperPosteriorCalcaneusHindfoot, LeftEHindfootAnat,
+                LeftPosteriorCalcaneusMarker)
+            )
+        if self.valueRightFootModelCheck == '1':
+            RightEHindfootAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEHindfootAnatRelTech, RightEHindfootTech)
+            RightEForefootAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEForefootAnatRelTech, RightEForefootTech)
+            RightEHalluxAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEHalluxAnatRelTech, RightEHalluxTech)
+            RightUpperPosteriorCalcaneusHindfoot = (
+                math.FrameVector(_batch_count, np.asarray(arrayRPCALUX)[_batch_slice],
+                np.asarray(arrayRPCALUY)[_batch_slice], np.asarray(arrayRPCALUZ)[_batch_slice])
+            )
+            RightUpperPosteriorCalcaneusMarker = (
+                math.TransformPointIntoLabCoors(RightUpperPosteriorCalcaneusHindfoot, RightEHindfootAnat,
+                RightPosteriorCalcaneusMarker)
+            )
+        if TrunkFlag == 1:
+            TrunkAnglesTORRad = math.EulerAngles_YXZ(ETrunkAnat, ELab)
+            TrunkAnglesROTRad = math.EulerAngles_ZXY(ETrunkAnat, ELab)
+            if self.TrunkRotationSequence == 'TOR':
+                TrunkAnglesRad = TrunkAnglesTORRad
+            if self.TrunkRotationSequence == 'ROT':
+                TrunkAnglesRad = TrunkAnglesROTRad
+        else:
+            TrunkAnglesTORRad = math.FrameVector(_batch_count, 0.0, 0.0, 0.0)
+            TrunkAnglesROTRad = math.FrameVector(_batch_count, 0.0, 0.0, 0.0)
+            TrunkAnglesRad = math.FrameVector(_batch_count, 0.0, 0.0, 0.0)
+        PelvisAnglesTORRad = math.EulerAngles_YXZ(EPelvisAnat, ELab)
+        PelvisAnglesROTRad = math.EulerAngles_ZXY(EPelvisAnat, ELab)
+        if self.PelvisRotationSequence == 'TOR':
+            PelvisAnglesRad = PelvisAnglesTORRad
+        if self.PelvisRotationSequence == 'ROT':
+            PelvisAnglesRad = PelvisAnglesROTRad
+        LeftThighAnglesRad = math.EulerAngles_YXZ(LeftEThighAnat, ELab)
+        RightThighAnglesRad = math.EulerAngles_YXZ(RightEThighAnat, ELab)
+        LeftShankAnglesRad = math.EulerAngles_YXZ(LeftEShankDistalAnat, ELab)
+        RightShankAnglesRad = math.EulerAngles_YXZ(RightEShankDistalAnat, ELab)
+        LeftFootAnglesRad = math.EulerAngles_YXZ(LeftEFootAnat, ELab)
+        RightFootAnglesRad = math.EulerAngles_YXZ(RightEFootAnat, ELab)
+        if self.valueLeftFootModelCheck == '1':
+            LeftHindfootAnglesRad = math.EulerAngles_YXZ(LeftEHindfootAnat, ELab)
+            LeftForefootAnglesRad = math.EulerAngles_YXZ(LeftEForefootAnat, ELab)
+            LeftHalluxAnglesRad = math.EulerAngles_YXZ(LeftEHalluxAnat, ELab)
+            ey = math.FrameVector(_batch_count, LeftEHindfootAnat[..., 0, 1], LeftEHindfootAnat[..., 1, 1], 0)
+            ey = ey / np.linalg.norm(ey, axis=-1)[..., None]
+            R1 = math.FrameVector(_batch_count, 0.0, 0.0, 1.0)
+            ex = np.cross(ey, R1)
+            ez = np.cross(ex, ey)
+            LeftEHFProgression = np.stack((ex, ey, ez), axis=-1)
+            LeftHindfootAnglesRelHFProgressionRad = math.EulerAngles_YXZ(LeftEHindfootAnat, LeftEHFProgression)
+            LeftForefootAnglesRelHFProgressionRad = math.EulerAngles_YXZ(LeftEForefootAnat, LeftEHFProgression)
+            LeftHalluxAnglesRelHFProgressionRad = math.EulerAngles_YXZ(LeftEHalluxAnat, LeftEHFProgression)
+        if self.valueRightFootModelCheck == '1':
+            RightHindfootAnglesRad = math.EulerAngles_YXZ(RightEHindfootAnat, ELab)
+            RightForefootAnglesRad = math.EulerAngles_YXZ(RightEForefootAnat, ELab)
+            RightHalluxAnglesRad = math.EulerAngles_YXZ(RightEHalluxAnat, ELab)
+            ey = math.FrameVector(_batch_count, RightEHindfootAnat[..., 0, 1], RightEHindfootAnat[..., 1, 1], 0)
+            ey = ey / np.linalg.norm(ey, axis=-1)[..., None]
+            R1 = math.FrameVector(_batch_count, 0.0, 0.0, 1.0)
+            ex = np.cross(ey, R1)
+            ez = np.cross(ex, ey)
+            RightEHFProgression = np.stack((ex, ey, ez), axis=-1)
+            RightHindfootAnglesRelHFProgressionRad = math.EulerAngles_YXZ(RightEHindfootAnat, RightEHFProgression)
+            RightForefootAnglesRelHFProgressionRad = math.EulerAngles_YXZ(RightEForefootAnat, RightEHFProgression)
+            RightHalluxAnglesRelHFProgressionRad = math.EulerAngles_YXZ(RightEHalluxAnat, RightEHFProgression)
+        LeftHipAnglesRad = math.EulerAngles_YXZ(LeftEThighAnat, EPelvisAnat)
+        RightHipAnglesRad = math.EulerAngles_YXZ(RightEThighAnat, EPelvisAnat)
+        LeftKneeAnglesProximalRad = math.EulerAngles_YXZ(LeftEShankProximalAnat, LeftEThighAnat)
+        RightKneeAnglesProximalRad = math.EulerAngles_YXZ(RightEShankProximalAnat, RightEThighAnat)
+        LeftKneeAnglesDistalRad = math.EulerAngles_YXZ(LeftEShankDistalAnat, LeftEThighAnat)
+        RightKneeAnglesDistalRad = math.EulerAngles_YXZ(RightEShankDistalAnat, RightEThighAnat)
+        if self.ShankCoordinateSystem == 'Distal':
+            LeftKneeAnglesRad = math.EulerAngles_YXZ(LeftEShankDistalAnat, LeftEThighAnat)
+            RightKneeAnglesRad = math.EulerAngles_YXZ(RightEShankDistalAnat, RightEThighAnat)
+        if self.ShankCoordinateSystem == 'Proximal':
+            LeftKneeAnglesRad = math.EulerAngles_YXZ(LeftEShankProximalAnat, LeftEThighAnat)
+            RightKneeAnglesRad = math.EulerAngles_YXZ(RightEShankProximalAnat, RightEThighAnat)
+        LeftAnkleAnglesRad = math.EulerAngles_YXZ(LeftEFootAnat, LeftEShankDistalAnat)
+        RightAnkleAnglesRad = math.EulerAngles_YXZ(RightEFootAnat, RightEShankDistalAnat)
+        if self.valueLeftFootModelCheck == '1':
+            LeftAnkleComplexAnglesRad = math.EulerAngles_YXZ(LeftEHindfootAnat, LeftEShankDistalAnat)
+            LeftMidfootAnglesRad = math.EulerAngles_YXZ(LeftEForefootAnat, LeftEHindfootAnat)
+            LeftToesAnglesRad = (
+                np.where(np.logical_not(LeftHalluxMarker[..., 2] == 0)[..., None],
+                math.EulerAngles_YXZ(LeftEHalluxAnat, LeftEForefootAnat), 0.0)
+            )
+        if self.valueRightFootModelCheck == '1':
+            RightAnkleComplexAnglesRad = math.EulerAngles_YXZ(RightEHindfootAnat, RightEShankDistalAnat)
+            RightMidfootAnglesRad = math.EulerAngles_YXZ(RightEForefootAnat, RightEHindfootAnat)
+            RightToesAnglesRad = math.EulerAngles_YXZ(RightEHalluxAnat, RightEForefootAnat)
+            RightToesAnglesRad = (
+                np.where(np.logical_not(RightHalluxMarker[..., 2] == 0)[..., None],
+                math.EulerAngles_YXZ(RightEHalluxAnat, RightEForefootAnat), 0.0)
+            )
+        Sign = -1
+        T1, T1[..., 0, 0], T1[..., 1, 1], T1[..., 2, 2] = (np.eye(3), -Sign, +1, Sign)
+        T2, T2[..., 0, 0], T2[..., 1, 1], T2[..., 2, 2] = (np.eye(3), Sign, -1, Sign)
+        T3, T3[..., 0, 0], T3[..., 1, 1], T3[..., 2, 2] = (np.eye(3), Sign, +1, Sign)
+        LeftTrunkAnglesDeg = math.TransformVectorIntoLabCoors(TrunkAnglesRad, T1) * 180 / np.pi
+        LeftTrunkAnglesTORDeg = math.TransformVectorIntoLabCoors(TrunkAnglesTORRad, T1) * 180 / np.pi
+        LeftTrunkAnglesROTDeg = math.TransformVectorIntoLabCoors(TrunkAnglesROTRad, T1) * 180 / np.pi
+        LeftPelvisAnglesDeg = math.TransformVectorIntoLabCoors(PelvisAnglesRad, T1) * 180 / np.pi
+        LeftPelvisAnglesTORDeg = math.TransformVectorIntoLabCoors(PelvisAnglesTORRad, T1) * 180 / np.pi
+        LeftPelvisAnglesROTDeg = math.TransformVectorIntoLabCoors(PelvisAnglesROTRad, T1) * 180 / np.pi
+        LeftThighAnglesDeg = math.TransformVectorIntoLabCoors(LeftThighAnglesRad, T1) * 180 / np.pi
+        LeftShankAnglesDeg = math.TransformVectorIntoLabCoors(LeftShankAnglesRad, T1) * 180 / np.pi
+        LeftFootAnglesDeg = math.TransformVectorIntoLabCoors(LeftFootAnglesRad, T1) * 180 / np.pi
+        LeftHipAnglesDeg = math.TransformVectorIntoLabCoors(LeftHipAnglesRad, T2) * 180 / np.pi
+        LeftKneeAnglesDeg = math.TransformVectorIntoLabCoors(LeftKneeAnglesRad, T3) * 180 / np.pi
+        LeftKneeAnglesProximalDeg = math.TransformVectorIntoLabCoors(LeftKneeAnglesProximalRad, T3) * 180 / np.pi
+        LeftKneeAnglesDistalDeg = math.TransformVectorIntoLabCoors(LeftKneeAnglesDistalRad, T3) * 180 / np.pi
+        LeftAnkleAnglesDeg = math.TransformVectorIntoLabCoors(LeftAnkleAnglesRad, T2) * 180 / np.pi
+        if self.valueLeftFootModelCheck == '1':
+            LeftHindfootAnglesDeg = math.TransformVectorIntoLabCoors(LeftHindfootAnglesRad, T1) * 180 / np.pi
+            LeftForefootAnglesDeg = math.TransformVectorIntoLabCoors(LeftForefootAnglesRad, T1) * 180 / np.pi
+            LeftHalluxAnglesDeg = math.TransformVectorIntoLabCoors(LeftHalluxAnglesRad, T1) * 180 / np.pi
+            LeftHindfootAnglesRelHFProgressionDeg = math.TransformVectorIntoLabCoors(LeftHindfootAnglesRelHFProgressionRad, T2) * 180 / np.pi
+            LeftForefootAnglesRelHFProgressionDeg = math.TransformVectorIntoLabCoors(LeftForefootAnglesRelHFProgressionRad, T2) * 180 / np.pi
+            LeftHalluxAnglesRelHFProgressionDeg = math.TransformVectorIntoLabCoors(LeftHalluxAnglesRelHFProgressionRad, T2) * 180 / np.pi
+            LeftAnkleComplexAnglesDeg = math.TransformVectorIntoLabCoors(LeftAnkleComplexAnglesRad, T2) * 180 / np.pi
+            LeftMidfootAnglesDeg = math.TransformVectorIntoLabCoors(LeftMidfootAnglesRad, T2) * 180 / np.pi
+            LeftToesAnglesDeg = math.TransformVectorIntoLabCoors(LeftToesAnglesRad, T2) * 180 / np.pi
+        T1, T2, T3 = (np.eye(3), np.eye(3), np.eye(3))
+        LeftTrunkAnglesRad = math.TransformVectorIntoLabCoors(TrunkAnglesRad, T1)
+        LeftPelvisAnglesRad = math.TransformVectorIntoLabCoors(PelvisAnglesRad, T1)
+        LeftThighAnglesRad = math.TransformVectorIntoLabCoors(LeftThighAnglesRad, T1)
+        LeftShankAnglesRad = math.TransformVectorIntoLabCoors(LeftShankAnglesRad, T1)
+        LeftFootAnglesRad = math.TransformVectorIntoLabCoors(LeftFootAnglesRad, T1)
+        LeftHipAnglesRad = math.TransformVectorIntoLabCoors(LeftHipAnglesRad, T2)
+        LeftKneeAnglesRad = math.TransformVectorIntoLabCoors(LeftKneeAnglesRad, T3)
+        LeftAnkleAnglesRad = math.TransformVectorIntoLabCoors(LeftAnkleAnglesRad, T2)
+        Sign = 1
+        T1, T1[..., 0, 0], T1[..., 1, 1], T1[..., 2, 2] = (np.eye(3), -Sign, +1, Sign)
+        T2, T2[..., 0, 0], T2[..., 1, 1], T2[..., 2, 2] = (np.eye(3), Sign, -1, Sign)
+        T3, T3[..., 0, 0], T3[..., 1, 1], T3[..., 2, 2] = (np.eye(3), Sign, +1, Sign)
+        RightTrunkAnglesDeg = math.TransformVectorIntoLabCoors(TrunkAnglesRad, T1) * 180 / np.pi
+        RightTrunkAnglesTORDeg = math.TransformVectorIntoLabCoors(TrunkAnglesTORRad, T1) * 180 / np.pi
+        RightTrunkAnglesROTDeg = math.TransformVectorIntoLabCoors(TrunkAnglesROTRad, T1) * 180 / np.pi
+        RightPelvisAnglesDeg = math.TransformVectorIntoLabCoors(PelvisAnglesRad, T1) * 180 / np.pi
+        RightPelvisAnglesTORDeg = math.TransformVectorIntoLabCoors(PelvisAnglesTORRad, T1) * 180 / np.pi
+        RightPelvisAnglesROTDeg = math.TransformVectorIntoLabCoors(PelvisAnglesROTRad, T1) * 180 / np.pi
+        RightThighAnglesDeg = math.TransformVectorIntoLabCoors(RightThighAnglesRad, T1) * 180 / np.pi
+        RightShankAnglesDeg = math.TransformVectorIntoLabCoors(RightShankAnglesRad, T1) * 180 / np.pi
+        RightFootAnglesDeg = math.TransformVectorIntoLabCoors(RightFootAnglesRad, T1) * 180 / np.pi
+        RightHipAnglesDeg = math.TransformVectorIntoLabCoors(RightHipAnglesRad, T2) * 180 / np.pi
+        RightKneeAnglesDeg = math.TransformVectorIntoLabCoors(RightKneeAnglesRad, T3) * 180 / np.pi
+        RightKneeAnglesProximalDeg = math.TransformVectorIntoLabCoors(RightKneeAnglesProximalRad, T3) * 180 / np.pi
+        RightKneeAnglesDistalDeg = math.TransformVectorIntoLabCoors(RightKneeAnglesDistalRad, T3) * 180 / np.pi
+        RightAnkleAnglesDeg = math.TransformVectorIntoLabCoors(RightAnkleAnglesRad, T2) * 180 / np.pi
+        if self.valueRightFootModelCheck == '1':
+            RightHindfootAnglesDeg = math.TransformVectorIntoLabCoors(RightHindfootAnglesRad, T1) * 180 / np.pi
+            RightForefootAnglesDeg = math.TransformVectorIntoLabCoors(RightForefootAnglesRad, T1) * 180 / np.pi
+            RightHalluxAnglesDeg = math.TransformVectorIntoLabCoors(RightHalluxAnglesRad, T1) * 180 / np.pi
+            RightHindfootAnglesRelHFProgressionDeg = math.TransformVectorIntoLabCoors(RightHindfootAnglesRelHFProgressionRad, T2) * 180 / np.pi
+            RightForefootAnglesRelHFProgressionDeg = math.TransformVectorIntoLabCoors(RightForefootAnglesRelHFProgressionRad, T2) * 180 / np.pi
+            RightHalluxAnglesRelHFProgressionDeg = math.TransformVectorIntoLabCoors(RightHalluxAnglesRelHFProgressionRad, T2) * 180 / np.pi
+            RightAnkleComplexAnglesDeg = math.TransformVectorIntoLabCoors(RightAnkleComplexAnglesRad, T2) * 180 / np.pi
+            RightMidfootAnglesDeg = math.TransformVectorIntoLabCoors(RightMidfootAnglesRad, T2) * 180 / np.pi
+            RightToesAnglesDeg = math.TransformVectorIntoLabCoors(RightToesAnglesRad, T2) * 180 / np.pi
+        T1, T2, T3 = (np.eye(3), np.eye(3), np.eye(3))
+        RightTrunkAnglesRad = math.TransformVectorIntoLabCoors(TrunkAnglesRad, T1)
+        RightPelvisAnglesRad = math.TransformVectorIntoLabCoors(PelvisAnglesRad, T1)
+        RightThighAnglesRad = math.TransformVectorIntoLabCoors(RightThighAnglesRad, T1)
+        RightShankAnglesRad = math.TransformVectorIntoLabCoors(RightShankAnglesRad, T1)
+        RightFootAnglesRad = math.TransformVectorIntoLabCoors(RightFootAnglesRad, T1)
+        RightHipAnglesRad = math.TransformVectorIntoLabCoors(RightHipAnglesRad, T2)
+        RightKneeAnglesRad = math.TransformVectorIntoLabCoors(RightKneeAnglesRad, T3)
+        RightAnkleAnglesRad = math.TransformVectorIntoLabCoors(RightAnkleAnglesRad, T2)
+        # Muscle polynomials and attachment masks are evaluated over all frames.
+        LKF = LeftKneeAnglesProximalDeg[..., 1]
+        RKF = RightKneeAnglesProximalDeg[..., 1]
+        LeftKneeX = KneeX0 + KneeX1 * LKF + KneeX2 * LKF * LKF + KneeX3 * LKF * LKF * LKF
+        RightKneeX = KneeX0 + KneeX1 * RKF + KneeX2 * RKF * RKF + KneeX3 * RKF * RKF * RKF
+        LeftKneeZ = KneeZ0 + KneeZ1 * LKF + KneeZ2 * LKF * LKF + KneeZ3 * LKF * LKF * LKF
+        RightKneeZ = KneeZ0 + KneeZ1 * RKF + KneeZ2 * RKF * RKF + KneeZ3 * RKF * RKF * RKF
+        LeftDelpKJC_Polynomial = math.FrameVector(_batch_count, LeftKneeX, 0, LeftKneeZ)
+        RightDelpKJC_Polynomial = math.FrameVector(_batch_count, RightKneeX, 0, RightKneeZ)
+        LeftPatX = PatX0 + PatX1 * LKF + PatX2 * LKF * LKF + PatX3 * LKF * LKF * LKF
+        RightPatX = PatX0 + PatX1 * RKF + PatX2 * RKF * RKF + PatX3 * RKF * RKF * RKF
+        LeftPatZ = PatZ0 + PatZ1 * LKF + PatZ2 * LKF * LKF + PatZ3 * LKF * LKF * LKF
+        RightPatZ = PatZ0 + PatZ1 * RKF + PatZ2 * RKF * RKF + PatZ3 * RKF * RKF * RKF
+        LeftPatR = PatR0 + PatR1 * LKF + PatR2 * LKF * LKF + PatR3 * LKF * LKF * LKF
+        RightPatR = PatR0 + PatR1 * RKF + PatR2 * RKF * RKF + PatR3 * RKF * RKF * RKF
+        [EPelvisAnatDelp, MidASISLab] = gait.AnatCS_Pelvis_Delp(LeftASISMarker, RightASISMarker, SacralMarker, PelvicTiltOffset)
+        LeftEThighAnatDelp = LeftEThighAnat
+        RightEThighAnatDelp = RightEThighAnat
+        LeftEShankAnatDelp = LeftEShankProximalAnat
+        RightEShankAnatDelp = RightEShankProximalAnat
+        LeftEPatellaAnatDelp = LeftEShankAnatDelp
+        RightEPatellaAnatDelp = RightEShankAnatDelp
+        LeftEPatellaAnatDelp = math.RotateCSaroundYaxis(LeftEPatellaAnatDelp, LeftPatR)
+        RightEPatellaAnatDelp = math.RotateCSaroundYaxis(RightEPatellaAnatDelp, RightPatR)
+        LeftECalcaneusAnatDelp = LeftEFootAnat
+        RightECalcaneusAnatDelp = RightEFootAnat
+        PelvisOriginDelp = math.FrameVector(_batch_count, MidASISLab[..., 0], MidASISLab[..., 1] + 1000.0, 949.0)
+        LeftThighOriginDelp = math.TransformPointIntoLabCoors(DelpLeftHJC, EPelvisAnatDelp, PelvisOriginDelp)
+        RightThighOriginDelp = math.TransformPointIntoLabCoors(DelpRightHJC, EPelvisAnatDelp, PelvisOriginDelp)
+        LeftShankOriginDelp = math.TransformPointIntoLabCoors(LeftDelpKJC_Polynomial, LeftEThighAnatDelp, LeftThighOriginDelp)
+        RightShankOriginDelp = math.TransformPointIntoLabCoors(RightDelpKJC_Polynomial, RightEThighAnatDelp, RightThighOriginDelp)
+        LeftPatellaOriginDelp = (
+            math.TransformPointIntoLabCoors(math.FrameVector(_batch_count, LeftPatX, -PatY, LeftPatZ),
+            LeftEShankAnatDelp, LeftShankOriginDelp)
+        )
+        RightPatellaOriginDelp = (
+            math.TransformPointIntoLabCoors(math.FrameVector(_batch_count, RightPatX, PatY, RightPatZ),
+            RightEShankAnatDelp, RightShankOriginDelp)
+        )
+        LeftCalcaneusOriginDelp_AJC = math.TransformPointIntoLabCoors(DelpAJC, LeftEShankAnatDelp, LeftShankOriginDelp)
+        RightCalcaneusOriginDelp_AJC = math.TransformPointIntoLabCoors(DelpAJC, RightEShankAnatDelp, RightShankOriginDelp)
+        LeftCalcaneusOriginDelp = math.TransformPointIntoLabCoors(LCalC, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp_AJC)
+        RightCalcaneusOriginDelp = math.TransformPointIntoLabCoors(RCalC, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp_AJC)
+        ELabDelp = np.eye(3)
+        EPelvisAnatDelp0 = ELabDelp
+        LeftEThighAnatDelp0 = ELabDelp
+        RightEThighAnatDelp0 = ELabDelp
+        LeftEShankAnatDelp0 = ELabDelp
+        RightEShankAnatDelp0 = ELabDelp
+        LeftECalcaneusAnatDelp0 = ELabDelp
+        RightECalcaneusAnatDelp0 = ELabDelp
+        LeftEPatellaAnatDelp0 = ELabDelp
+        RightEPatellaAnatDelp0 = ELabDelp
+        LeftECalcaneusAnatDelp0 = math.RotateCSaroundZaxis(ELabDelp, 15.0)
+        RightECalcaneusAnatDelp0 = math.RotateCSaroundZaxis(ELabDelp, -15.0)
+        LeftEPatellaAnatDelp0 = math.RotateCSaroundYaxis(ELabDelp, PatR0)
+        RightEPatellaAnatDelp0 = math.RotateCSaroundYaxis(ELabDelp, PatR0)
+        PelvisOriginDelp0 = PelvisOriginDelp
+        LeftThighOriginDelp0 = PelvisOriginDelp + DelpLeftHJC
+        RightThighOriginDelp0 = PelvisOriginDelp + DelpRightHJC
+        LeftShankOriginDelp0 = PelvisOriginDelp + DelpLeftHJC + DelpKJC0
+        RightShankOriginDelp0 = PelvisOriginDelp + DelpRightHJC + DelpKJC0
+        LeftPatellaOriginDelp0 = PelvisOriginDelp + DelpLeftHJC + DelpKJC0 + DelpLPat0
+        RightPatellaOriginDelp0 = PelvisOriginDelp + DelpRightHJC + DelpKJC0 + DelpRPat0
+        LeftCalcaneusOriginDelp0 = PelvisOriginDelp + DelpLeftHJC + DelpKJC0 + DelpAJC + LCalC
+        RightCalcaneusOriginDelp0 = PelvisOriginDelp + DelpRightHJC + DelpKJC0 + DelpAJC + RCalC
+        [LeftGMaS, LeftGMaSMusclePoints] = (
+            math.ComputeMuscleLength('Left', GMaS, GMaS_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightGMaS, RightGMaSMusclePoints] = (
+            math.ComputeMuscleLength('Right', GMaS, GMaS_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftGMaS0, LeftGMaSMusclePoints0] = (
+            math.ComputeMuscleLength('Left', GMaS, GMaS_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightGMaS0, RightGMaSMusclePoints0] = (
+            math.ComputeMuscleLength('Right', GMaS, GMaS_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftGMaM, LeftGMaMMusclePoints] = (
+            math.ComputeMuscleLength('Left', GMaM, GMaM_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightGMaM, RightGMaMMusclePoints] = (
+            math.ComputeMuscleLength('Right', GMaM, GMaM_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftGMaM0, LeftGMaMMusclePoints0] = (
+            math.ComputeMuscleLength('Left', GMaM, GMaM_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightGMaM0, RightGMaMMusclePoints0] = (
+            math.ComputeMuscleLength('Right', GMaM, GMaM_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftGMaI, LeftGMaIMusclePoints] = (
+            math.ComputeMuscleLength('Left', GMaI, GMaI_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightGMaI, RightGMaIMusclePoints] = (
+            math.ComputeMuscleLength('Right', GMaI, GMaI_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftGMaI0, LeftGMaIMusclePoints0] = (
+            math.ComputeMuscleLength('Left', GMaI, GMaI_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightGMaI0, RightGMaIMusclePoints0] = (
+            math.ComputeMuscleLength('Right', GMaI, GMaI_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftIlia, LeftIliaMusclePoints] = (
+            math.ComputeMuscleLength('Left', Ilia, Ilia_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightIlia, RightIliaMusclePoints] = (
+            math.ComputeMuscleLength('Right', Ilia, Ilia_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftIlia0, LeftIliaMusclePoints0] = (
+            math.ComputeMuscleLength('Left', Ilia, Ilia_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightIlia0, RightIliaMusclePoints0] = (
+            math.ComputeMuscleLength('Right', Ilia, Ilia_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftPsoa, LeftPsoaMusclePoints] = (
+            math.ComputeMuscleLength('Left', Psoa, Psoa_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightPsoa, RightPsoaMusclePoints] = (
+            math.ComputeMuscleLength('Right', Psoa, Psoa_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftPsoa0, LeftPsoaMusclePoints0] = (
+            math.ComputeMuscleLength('Left', Psoa, Psoa_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightPsoa0, RightPsoaMusclePoints0] = (
+            math.ComputeMuscleLength('Right', Psoa, Psoa_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftSeMe, LeftSeMeMusclePoints] = (
+            math.ComputeMuscleLength('Left', SeMe, SeMe_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightSeMe, RightSeMeMusclePoints] = (
+            math.ComputeMuscleLength('Right', SeMe, SeMe_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftSeMe0, LeftSeMeMusclePoints0] = (
+            math.ComputeMuscleLength('Left', SeMe, SeMe_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightSeMe0, RightSeMeMusclePoints0] = (
+            math.ComputeMuscleLength('Right', SeMe, SeMe_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftSeTe, LeftSeTeMusclePoints] = (
+            math.ComputeMuscleLength('Left', SeTe, SeTe_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightSeTe, RightSeTeMusclePoints] = (
+            math.ComputeMuscleLength('Right', SeTe, SeTe_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftSeTe0, LeftSeTeMusclePoints0] = (
+            math.ComputeMuscleLength('Left', SeTe, SeTe_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightSeTe0, RightSeTeMusclePoints0] = (
+            math.ComputeMuscleLength('Right', SeTe, SeTe_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftBiFL, LeftBiFLMusclePoints] = (
+            math.ComputeMuscleLength('Left', BiFL, BiFL_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightBiFL, RightBiFLMusclePoints] = (
+            math.ComputeMuscleLength('Right', BiFL, BiFL_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftBiFL0, LeftBiFLMusclePoints0] = (
+            math.ComputeMuscleLength('Left', BiFL, BiFL_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightBiFL0, RightBiFLMusclePoints0] = (
+            math.ComputeMuscleLength('Right', BiFL, BiFL_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftBiFS, LeftBiFSMusclePoints] = (
+            math.ComputeMuscleLength('Left', BiFS, BiFS_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightBiFS, RightBiFSMusclePoints] = (
+            math.ComputeMuscleLength('Right', BiFS, BiFS_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftBiFS0, LeftBiFSMusclePoints0] = (
+            math.ComputeMuscleLength('Left', BiFS, BiFS_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightBiFS0, RightBiFSMusclePoints0] = (
+            math.ComputeMuscleLength('Right', BiFS, BiFS_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftSole, LeftSoleMusclePoints] = (
+            math.ComputeMuscleLength('Left', Sole, Sole_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightSole, RightSoleMusclePoints] = (
+            math.ComputeMuscleLength('Right', Sole, Sole_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftSole0, LeftSoleMusclePoints0] = (
+            math.ComputeMuscleLength('Left', Sole, Sole_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightSole0, RightSoleMusclePoints0] = (
+            math.ComputeMuscleLength('Right', Sole, Sole_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftTiPo, LeftTiPoMusclePoints] = (
+            math.ComputeMuscleLength('Left', TiPo, TiPo_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightTiPo, RightTiPoMusclePoints] = (
+            math.ComputeMuscleLength('Right', TiPo, TiPo_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftTiPo0, LeftTiPoMusclePoints0] = (
+            math.ComputeMuscleLength('Left', TiPo, TiPo_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightTiPo0, RightTiPoMusclePoints0] = (
+            math.ComputeMuscleLength('Right', TiPo, TiPo_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftPeBr, LeftPeBrMusclePoints] = (
+            math.ComputeMuscleLength('Left', PeBr, PeBr_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightPeBr, RightPeBrMusclePoints] = (
+            math.ComputeMuscleLength('Right', PeBr, PeBr_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftPeBr0, LeftPeBrMusclePoints0] = (
+            math.ComputeMuscleLength('Left', PeBr, PeBr_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightPeBr0, RightPeBrMusclePoints0] = (
+            math.ComputeMuscleLength('Right', PeBr, PeBr_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        [LeftPeLn, LeftPeLnMusclePoints] = (
+            math.ComputeMuscleLength('Left', PeLn, PeLn_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp)
+        )
+        [RightPeLn, RightPeLnMusclePoints] = (
+            math.ComputeMuscleLength('Right', PeLn, PeLn_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp)
+        )
+        [LeftPeLn0, LeftPeLnMusclePoints0] = (
+            math.ComputeMuscleLength('Left', PeLn, PeLn_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightPeLn0, RightPeLnMusclePoints0] = (
+            math.ComputeMuscleLength('Right', PeLn, PeLn_Seg, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        Left_ReFe = []
+        Left_ReFe = ReFe
+        Left_ReFe_Seg = ReFe_Seg
+        Right_ReFe = []
+        Right_ReFe = ReFe
+        Right_ReFe_Seg = ReFe_Seg
+        Left_ReFe0 = []
+        Left_ReFe0.append(ReFe[0])
+        Left_ReFe0.append(ReFe[2])
+        Left_ReFe_Seg0 = ['Pelvis', 'Patella']
+        Right_ReFe0 = []
+        Right_ReFe0.append(ReFe[0])
+        Right_ReFe0.append(ReFe[2])
+        Right_ReFe_Seg0 = ['Pelvis', 'Patella']
+        [LeftReFe, LeftReFeMusclePoints] = (
+            math.ComputeMuscleLength('Left', Left_ReFe, Left_ReFe_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp,
+            active_points=np.column_stack((np.ones(_batch_count, dtype=bool), ~(LKF < 83),
+            np.ones(_batch_count, dtype=bool))))
+        )
+        [RightReFe, RightReFeMusclePoints] = (
+            math.ComputeMuscleLength('Right', Right_ReFe, Right_ReFe_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp,
+            active_points=np.column_stack((np.ones(_batch_count, dtype=bool), ~(RKF < 83),
+            np.ones(_batch_count, dtype=bool))))
+        )
+        [LeftReFe0, LeftReFeMusclePoints0] = (
+            math.ComputeMuscleLength('Left', Left_ReFe0, Left_ReFe_Seg0, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightReFe0, RightReFeMusclePoints0] = (
+            math.ComputeMuscleLength('Right', Right_ReFe0, Right_ReFe_Seg0, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        Left_VaLa = []
+        Left_VaLa = VaLa
+        Left_VaLa_Seg = VaLa_Seg
+        Right_VaLa = []
+        Right_VaLa = VaLa
+        Right_VaLa_Seg = VaLa_Seg
+        Left_VaLa0 = []
+        Left_VaLa0.append(VaLa[0])
+        Left_VaLa0.append(VaLa[1])
+        Left_VaLa0.append(VaLa[4])
+        Left_VaLa_Seg0 = ['Thigh', 'Thigh', 'Patella']
+        Right_VaLa0 = []
+        Right_VaLa0.append(VaLa[0])
+        Right_VaLa0.append(VaLa[1])
+        Right_VaLa0.append(VaLa[4])
+        Right_VaLa_Seg0 = ['Thigh', 'Thigh', 'Patella']
+        [LeftVaLa, LeftVaLaMusclePoints] = (
+            math.ComputeMuscleLength('Left', Left_VaLa, Left_VaLa_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp,
+            active_points=np.column_stack((np.ones(_batch_count, dtype=bool), np.ones(_batch_count,
+            dtype=bool), ~(LKF < 69), ~(LKF < 110), np.ones(_batch_count, dtype=bool))))
+        )
+        [RightVaLa, RightVaLaMusclePoints] = (
+            math.ComputeMuscleLength('Right', Right_VaLa, Right_VaLa_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp,
+            active_points=np.column_stack((np.ones(_batch_count, dtype=bool), np.ones(_batch_count,
+            dtype=bool), ~(RKF < 69), ~(RKF < 110), np.ones(_batch_count, dtype=bool))))
+        )
+        [LeftVaLa0, LeftVaLaMusclePoints0] = (
+            math.ComputeMuscleLength('Left', Left_VaLa0, Left_VaLa_Seg0, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightVaLa0, RightVaLaMusclePoints0] = (
+            math.ComputeMuscleLength('Right', Right_VaLa0, Right_VaLa_Seg0, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        Left_GaMe = []
+        Left_GaMe = GaMe
+        Left_GaMe_Seg = GaMe_Seg
+        Right_GaMe = []
+        Right_GaMe = GaMe
+        Right_GaMe_Seg = GaMe_Seg
+        Left_GaMe0 = GaMe
+        Left_GaMe_Seg0 = GaMe_Seg
+        Right_GaMe0 = GaMe
+        Right_GaMe_Seg0 = GaMe_Seg
+        [LeftGaMe, LeftGaMeMusclePoints] = (
+            math.ComputeMuscleLength('Left', Left_GaMe, Left_GaMe_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp,
+            active_points=np.column_stack((np.ones(_batch_count, dtype=bool), ~(LKF > 44),
+            np.ones(_batch_count, dtype=bool), np.ones(_batch_count, dtype=bool))))
+        )
+        [RightGaMe, RightGaMeMusclePoints] = (
+            math.ComputeMuscleLength('Right', Right_GaMe, Right_GaMe_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp,
+            active_points=np.column_stack((np.ones(_batch_count, dtype=bool), ~(RKF > 44),
+            np.ones(_batch_count, dtype=bool), np.ones(_batch_count, dtype=bool))))
+        )
+        [LeftGaMe0, LeftGaMeMusclePoints0] = (
+            math.ComputeMuscleLength('Left', Left_GaMe0, Left_GaMe_Seg0, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightGaMe0, RightGaMeMusclePoints0] = (
+            math.ComputeMuscleLength('Right', Right_GaMe0, Right_GaMe_Seg0, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        Left_GaLa = []
+        Left_GaLa = GaLa
+        Left_GaLa_Seg = GaLa_Seg
+        Right_GaLa = []
+        Right_GaLa = GaLa
+        Right_GaLa_Seg = GaLa_Seg
+        Left_GaLa0 = GaLa
+        Left_GaLa_Seg0 = GaLa_Seg
+        Right_GaLa0 = GaLa
+        Right_GaLa_Seg0 = GaLa_Seg
+        [LeftGaLa, LeftGaLaMusclePoints] = (
+            math.ComputeMuscleLength('Left', Left_GaLa, Left_GaLa_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            LeftEThighAnatDelp, LeftThighOriginDelp, LeftEShankAnatDelp, LeftShankOriginDelp,
+            LeftEPatellaAnatDelp, LeftPatellaOriginDelp, LeftECalcaneusAnatDelp, LeftCalcaneusOriginDelp,
+            active_points=np.column_stack((np.ones(_batch_count, dtype=bool), ~(LKF > 44),
+            np.ones(_batch_count, dtype=bool), np.ones(_batch_count, dtype=bool))))
+        )
+        [RightGaLa, RightGaLaMusclePoints] = (
+            math.ComputeMuscleLength('Right', Right_GaLa, Right_GaLa_Seg, EPelvisAnatDelp, PelvisOriginDelp,
+            RightEThighAnatDelp, RightThighOriginDelp, RightEShankAnatDelp, RightShankOriginDelp,
+            RightEPatellaAnatDelp, RightPatellaOriginDelp, RightECalcaneusAnatDelp, RightCalcaneusOriginDelp,
+            active_points=np.column_stack((np.ones(_batch_count, dtype=bool), ~(RKF > 44),
+            np.ones(_batch_count, dtype=bool), np.ones(_batch_count, dtype=bool))))
+        )
+        [LeftGaLa0, LeftGaLaMusclePoints0] = (
+            math.ComputeMuscleLength('Left', Left_GaLa0, Left_GaLa_Seg0, EPelvisAnatDelp0, PelvisOriginDelp0,
+            LeftEThighAnatDelp0, LeftThighOriginDelp0, LeftEShankAnatDelp0, LeftShankOriginDelp0,
+            LeftEPatellaAnatDelp0, LeftPatellaOriginDelp0, LeftECalcaneusAnatDelp0, LeftCalcaneusOriginDelp0)
+        )
+        [RightGaLa0, RightGaLaMusclePoints0] = (
+            math.ComputeMuscleLength('Right', Right_GaLa0, Right_GaLa_Seg0, EPelvisAnatDelp0, PelvisOriginDelp0,
+            RightEThighAnatDelp0, RightThighOriginDelp0, RightEShankAnatDelp0, RightShankOriginDelp0,
+            RightEPatellaAnatDelp0, RightPatellaOriginDelp0, RightECalcaneusAnatDelp0,
+            RightCalcaneusOriginDelp0)
+        )
+        arrayLeftHipCenter[0][_batch_slice] = np.broadcast_to(Direction * LeftHipCenterLab[..., 0], (_batch_count,))
+        arrayLeftHipCenter[1][_batch_slice] = np.broadcast_to(Direction * LeftHipCenterLab[..., 1], (_batch_count,))
+        arrayLeftHipCenter[2][_batch_slice] = np.broadcast_to(LeftHipCenterLab[..., 2], (_batch_count,))
+        arrayRightHipCenter[0][_batch_slice] = np.broadcast_to(Direction * RightHipCenterLab[..., 0], (_batch_count,))
+        arrayRightHipCenter[1][_batch_slice] = np.broadcast_to(Direction * RightHipCenterLab[..., 1], (_batch_count,))
+        arrayRightHipCenter[2][_batch_slice] = np.broadcast_to(RightHipCenterLab[..., 2], (_batch_count,))
+        arrayLeftKneeCenter[0][_batch_slice] = np.broadcast_to(Direction * LeftKneeCenterLab[..., 0], (_batch_count,))
+        arrayLeftKneeCenter[1][_batch_slice] = np.broadcast_to(Direction * LeftKneeCenterLab[..., 1], (_batch_count,))
+        arrayLeftKneeCenter[2][_batch_slice] = np.broadcast_to(LeftKneeCenterLab[..., 2], (_batch_count,))
+        arrayRightKneeCenter[0][_batch_slice] = np.broadcast_to(Direction * RightKneeCenterLab[..., 0], (_batch_count,))
+        arrayRightKneeCenter[1][_batch_slice] = np.broadcast_to(Direction * RightKneeCenterLab[..., 1], (_batch_count,))
+        arrayRightKneeCenter[2][_batch_slice] = np.broadcast_to(RightKneeCenterLab[..., 2], (_batch_count,))
+        arrayLeftAnkleCenter[0][_batch_slice] = np.broadcast_to(Direction * LeftAnkleCenterLab[..., 0], (_batch_count,))
+        arrayLeftAnkleCenter[1][_batch_slice] = np.broadcast_to(Direction * LeftAnkleCenterLab[..., 1], (_batch_count,))
+        arrayLeftAnkleCenter[2][_batch_slice] = np.broadcast_to(LeftAnkleCenterLab[..., 2], (_batch_count,))
+        arrayRightAnkleCenter[0][_batch_slice] = np.broadcast_to(Direction * RightAnkleCenterLab[..., 0], (_batch_count,))
+        arrayRightAnkleCenter[1][_batch_slice] = np.broadcast_to(Direction * RightAnkleCenterLab[..., 1], (_batch_count,))
+        arrayRightAnkleCenter[2][_batch_slice] = np.broadcast_to(RightAnkleCenterLab[..., 2], (_batch_count,))
+        arrayLeftASIS[0][_batch_slice] = np.broadcast_to(Direction * LeftASISMarker[..., 0], (_batch_count,))
+        arrayLeftASIS[1][_batch_slice] = np.broadcast_to(Direction * LeftASISMarker[..., 1], (_batch_count,))
+        arrayLeftASIS[2][_batch_slice] = np.broadcast_to(LeftASISMarker[..., 2], (_batch_count,))
+        arrayRightASIS[0][_batch_slice] = np.broadcast_to(Direction * RightASISMarker[..., 0], (_batch_count,))
+        arrayRightASIS[1][_batch_slice] = np.broadcast_to(Direction * RightASISMarker[..., 1], (_batch_count,))
+        arrayRightASIS[2][_batch_slice] = np.broadcast_to(RightASISMarker[..., 2], (_batch_count,))
+        arrayLeftKNE[0][_batch_slice] = np.broadcast_to(Direction * LeftLateralKneeMarker[..., 0], (_batch_count,))
+        arrayLeftKNE[1][_batch_slice] = np.broadcast_to(Direction * LeftLateralKneeMarker[..., 1], (_batch_count,))
+        arrayLeftKNE[2][_batch_slice] = np.broadcast_to(LeftLateralKneeMarker[..., 2], (_batch_count,))
+        arrayRightKNE[0][_batch_slice] = np.broadcast_to(Direction * RightLateralKneeMarker[..., 0], (_batch_count,))
+        arrayRightKNE[1][_batch_slice] = np.broadcast_to(Direction * RightLateralKneeMarker[..., 1], (_batch_count,))
+        arrayRightKNE[2][_batch_slice] = np.broadcast_to(RightLateralKneeMarker[..., 2], (_batch_count,))
+        arrayLeftANK[0][_batch_slice] = np.broadcast_to(Direction * LeftLateralAnkleMarker[..., 0], (_batch_count,))
+        arrayLeftANK[1][_batch_slice] = np.broadcast_to(Direction * LeftLateralAnkleMarker[..., 1], (_batch_count,))
+        arrayLeftANK[2][_batch_slice] = np.broadcast_to(LeftLateralAnkleMarker[..., 2], (_batch_count,))
+        arrayRightANK[0][_batch_slice] = np.broadcast_to(Direction * RightLateralAnkleMarker[..., 0], (_batch_count,))
+        arrayRightANK[1][_batch_slice] = np.broadcast_to(Direction * RightLateralAnkleMarker[..., 1], (_batch_count,))
+        arrayRightANK[2][_batch_slice] = np.broadcast_to(RightLateralAnkleMarker[..., 2], (_batch_count,))
+        if self.valueLeftFootModelCheck == '1':
+            arrayLeftUpperPCAL[0][_batch_slice] = np.broadcast_to(Direction * LeftUpperPosteriorCalcaneusMarker[..., 0], (_batch_count,))
+            arrayLeftUpperPCAL[1][_batch_slice] = np.broadcast_to(Direction * LeftUpperPosteriorCalcaneusMarker[..., 1], (_batch_count,))
+            arrayLeftUpperPCAL[2][_batch_slice] = np.broadcast_to(LeftUpperPosteriorCalcaneusMarker[..., 2], (_batch_count,))
+        if self.valueRightFootModelCheck == '1':
+            arrayRightUpperPCAL[0][_batch_slice] = np.broadcast_to(Direction * RightUpperPosteriorCalcaneusMarker[..., 0], (_batch_count,))
+            arrayRightUpperPCAL[1][_batch_slice] = np.broadcast_to(Direction * RightUpperPosteriorCalcaneusMarker[..., 1], (_batch_count,))
+            arrayRightUpperPCAL[2][_batch_slice] = np.broadcast_to(RightUpperPosteriorCalcaneusMarker[..., 2], (_batch_count,))
+        arrayPelvisOrigin[0][_batch_slice] = (
+            np.broadcast_to((np.asarray(arrayLeftHipCenter[0])[_batch_slice] +
+            np.asarray(arrayRightHipCenter[0])[_batch_slice]) / 2, (_batch_count,))
+        )
+        arrayPelvisOrigin[1][_batch_slice] = (
+            np.broadcast_to((np.asarray(arrayLeftHipCenter[1])[_batch_slice] +
+            np.asarray(arrayRightHipCenter[1])[_batch_slice]) / 2, (_batch_count,))
+        )
+        arrayPelvisOrigin[2][_batch_slice] = (
+            np.broadcast_to((np.asarray(arrayLeftHipCenter[2])[_batch_slice] +
+            np.asarray(arrayRightHipCenter[2])[_batch_slice]) / 2, (_batch_count,))
+        )
+        arrayLeftTrunkAngles[0][_batch_slice] = np.broadcast_to(LeftTrunkAnglesDeg[..., 0], (_batch_count,))
+        arrayLeftTrunkAngles[1][_batch_slice] = np.broadcast_to(LeftTrunkAnglesDeg[..., 1], (_batch_count,))
+        arrayLeftTrunkAngles[2][_batch_slice] = np.broadcast_to(LeftTrunkAnglesDeg[..., 2], (_batch_count,))
+        arrayLeftTrunkAnglesTOR[0][_batch_slice] = np.broadcast_to(LeftTrunkAnglesTORDeg[..., 0], (_batch_count,))
+        arrayLeftTrunkAnglesTOR[1][_batch_slice] = np.broadcast_to(LeftTrunkAnglesTORDeg[..., 1], (_batch_count,))
+        arrayLeftTrunkAnglesTOR[2][_batch_slice] = np.broadcast_to(LeftTrunkAnglesTORDeg[..., 2], (_batch_count,))
+        arrayLeftTrunkAnglesROT[0][_batch_slice] = np.broadcast_to(LeftTrunkAnglesROTDeg[..., 0], (_batch_count,))
+        arrayLeftTrunkAnglesROT[1][_batch_slice] = np.broadcast_to(LeftTrunkAnglesROTDeg[..., 1], (_batch_count,))
+        arrayLeftTrunkAnglesROT[2][_batch_slice] = np.broadcast_to(LeftTrunkAnglesROTDeg[..., 2], (_batch_count,))
+        arrayLeftPelvisAngles[0][_batch_slice] = np.broadcast_to(LeftPelvisAnglesDeg[..., 0], (_batch_count,))
+        arrayLeftPelvisAngles[1][_batch_slice] = np.broadcast_to(LeftPelvisAnglesDeg[..., 1], (_batch_count,))
+        arrayLeftPelvisAngles[2][_batch_slice] = np.broadcast_to(LeftPelvisAnglesDeg[..., 2], (_batch_count,))
+        arrayLeftPelvisAnglesTOR[0][_batch_slice] = np.broadcast_to(LeftPelvisAnglesTORDeg[..., 0], (_batch_count,))
+        arrayLeftPelvisAnglesTOR[1][_batch_slice] = np.broadcast_to(LeftPelvisAnglesTORDeg[..., 1], (_batch_count,))
+        arrayLeftPelvisAnglesTOR[2][_batch_slice] = np.broadcast_to(LeftPelvisAnglesTORDeg[..., 2], (_batch_count,))
+        arrayLeftPelvisAnglesROT[0][_batch_slice] = np.broadcast_to(LeftPelvisAnglesROTDeg[..., 0], (_batch_count,))
+        arrayLeftPelvisAnglesROT[1][_batch_slice] = np.broadcast_to(LeftPelvisAnglesROTDeg[..., 1], (_batch_count,))
+        arrayLeftPelvisAnglesROT[2][_batch_slice] = np.broadcast_to(LeftPelvisAnglesROTDeg[..., 2], (_batch_count,))
+        arrayLeftThighAngles[0][_batch_slice] = np.broadcast_to(LeftThighAnglesDeg[..., 0], (_batch_count,))
+        arrayLeftThighAngles[1][_batch_slice] = np.broadcast_to(LeftThighAnglesDeg[..., 1], (_batch_count,))
+        arrayLeftThighAngles[2][_batch_slice] = np.broadcast_to(LeftThighAnglesDeg[..., 2], (_batch_count,))
+        arrayLeftShankAngles[0][_batch_slice] = np.broadcast_to(LeftShankAnglesDeg[..., 0], (_batch_count,))
+        arrayLeftShankAngles[1][_batch_slice] = np.broadcast_to(LeftShankAnglesDeg[..., 1], (_batch_count,))
+        arrayLeftShankAngles[2][_batch_slice] = np.broadcast_to(LeftShankAnglesDeg[..., 2], (_batch_count,))
+        arrayLeftFootAngles[0][_batch_slice] = np.broadcast_to(LeftFootAnglesDeg[..., 0], (_batch_count,))
+        arrayLeftFootAngles[1][_batch_slice] = np.broadcast_to(LeftFootAnglesDeg[..., 1], (_batch_count,))
+        arrayLeftFootAngles[2][_batch_slice] = np.broadcast_to(LeftFootAnglesDeg[..., 2], (_batch_count,))
+        if self.valueLeftFootModelCheck == '1':
+            arrayLeftHindfootAngles[0][_batch_slice] = np.broadcast_to(LeftHindfootAnglesRelHFProgressionDeg[..., 0], (_batch_count,))
+            arrayLeftHindfootAngles[1][_batch_slice] = np.broadcast_to(LeftHindfootAnglesRelHFProgressionDeg[..., 1], (_batch_count,))
+            arrayLeftHindfootAngles[2][_batch_slice] = np.broadcast_to(LeftHindfootAnglesDeg[..., 2], (_batch_count,))
+            arrayLeftForefootAngles[0][_batch_slice] = np.broadcast_to(LeftForefootAnglesRelHFProgressionDeg[..., 0], (_batch_count,))
+            arrayLeftForefootAngles[1][_batch_slice] = np.broadcast_to(LeftForefootAnglesRelHFProgressionDeg[..., 1], (_batch_count,))
+            arrayLeftForefootAngles[2][_batch_slice] = np.broadcast_to(LeftForefootAnglesDeg[..., 2], (_batch_count,))
+            arrayLeftHalluxAngles[0][_batch_slice] = np.broadcast_to(LeftHalluxAnglesRelHFProgressionDeg[..., 0], (_batch_count,))
+            arrayLeftHalluxAngles[1][_batch_slice] = np.broadcast_to(LeftHalluxAnglesRelHFProgressionDeg[..., 1], (_batch_count,))
+            arrayLeftHalluxAngles[2][_batch_slice] = np.broadcast_to(LeftHalluxAnglesDeg[..., 2], (_batch_count,))
+        arrayLeftTrunkAnglesRad[0][_batch_slice] = np.broadcast_to(LeftTrunkAnglesRad[..., 0], (_batch_count,))
+        arrayLeftTrunkAnglesRad[1][_batch_slice] = np.broadcast_to(LeftTrunkAnglesRad[..., 1], (_batch_count,))
+        arrayLeftTrunkAnglesRad[2][_batch_slice] = np.broadcast_to(LeftTrunkAnglesRad[..., 2], (_batch_count,))
+        arrayLeftPelvisAnglesRad[0][_batch_slice] = np.broadcast_to(LeftPelvisAnglesRad[..., 0], (_batch_count,))
+        arrayLeftPelvisAnglesRad[1][_batch_slice] = np.broadcast_to(LeftPelvisAnglesRad[..., 1], (_batch_count,))
+        arrayLeftPelvisAnglesRad[2][_batch_slice] = np.broadcast_to(LeftPelvisAnglesRad[..., 2], (_batch_count,))
+        arrayLeftThighAnglesRad[0][_batch_slice] = np.broadcast_to(LeftThighAnglesRad[..., 0], (_batch_count,))
+        arrayLeftThighAnglesRad[1][_batch_slice] = np.broadcast_to(LeftThighAnglesRad[..., 1], (_batch_count,))
+        arrayLeftThighAnglesRad[2][_batch_slice] = np.broadcast_to(LeftThighAnglesRad[..., 2], (_batch_count,))
+        arrayLeftShankAnglesRad[0][_batch_slice] = np.broadcast_to(LeftShankAnglesRad[..., 0], (_batch_count,))
+        arrayLeftShankAnglesRad[1][_batch_slice] = np.broadcast_to(LeftShankAnglesRad[..., 1], (_batch_count,))
+        arrayLeftShankAnglesRad[2][_batch_slice] = np.broadcast_to(LeftShankAnglesRad[..., 2], (_batch_count,))
+        arrayLeftFootAnglesRad[0][_batch_slice] = np.broadcast_to(LeftFootAnglesRad[..., 0], (_batch_count,))
+        arrayLeftFootAnglesRad[1][_batch_slice] = np.broadcast_to(LeftFootAnglesRad[..., 1], (_batch_count,))
+        arrayLeftFootAnglesRad[2][_batch_slice] = np.broadcast_to(LeftFootAnglesRad[..., 2], (_batch_count,))
+        if self.valueLeftFootModelCheck == '1':
+            arrayLeftHindfootAnglesRad[0][_batch_slice] = np.broadcast_to(LeftHindfootAnglesRad[..., 0], (_batch_count,))
+            arrayLeftHindfootAnglesRad[1][_batch_slice] = np.broadcast_to(LeftHindfootAnglesRad[..., 1], (_batch_count,))
+            arrayLeftHindfootAnglesRad[2][_batch_slice] = np.broadcast_to(LeftHindfootAnglesRad[..., 2], (_batch_count,))
+            arrayLeftForefootAnglesRad[0][_batch_slice] = np.broadcast_to(LeftForefootAnglesRad[..., 0], (_batch_count,))
+            arrayLeftForefootAnglesRad[1][_batch_slice] = np.broadcast_to(LeftForefootAnglesRad[..., 1], (_batch_count,))
+            arrayLeftForefootAnglesRad[2][_batch_slice] = np.broadcast_to(LeftForefootAnglesRad[..., 2], (_batch_count,))
+            arrayLeftHalluxAnglesRad[0][_batch_slice] = np.broadcast_to(LeftHalluxAnglesRad[..., 0], (_batch_count,))
+            arrayLeftHalluxAnglesRad[1][_batch_slice] = np.broadcast_to(LeftHalluxAnglesRad[..., 1], (_batch_count,))
+            arrayLeftHalluxAnglesRad[2][_batch_slice] = np.broadcast_to(LeftHalluxAnglesRad[..., 2], (_batch_count,))
+        arrayRightTrunkAngles[0][_batch_slice] = np.broadcast_to(RightTrunkAnglesDeg[..., 0], (_batch_count,))
+        arrayRightTrunkAngles[1][_batch_slice] = np.broadcast_to(RightTrunkAnglesDeg[..., 1], (_batch_count,))
+        arrayRightTrunkAngles[2][_batch_slice] = np.broadcast_to(RightTrunkAnglesDeg[..., 2], (_batch_count,))
+        arrayRightTrunkAnglesTOR[0][_batch_slice] = np.broadcast_to(RightTrunkAnglesTORDeg[..., 0], (_batch_count,))
+        arrayRightTrunkAnglesTOR[1][_batch_slice] = np.broadcast_to(RightTrunkAnglesTORDeg[..., 1], (_batch_count,))
+        arrayRightTrunkAnglesTOR[2][_batch_slice] = np.broadcast_to(RightTrunkAnglesTORDeg[..., 2], (_batch_count,))
+        arrayRightTrunkAnglesROT[0][_batch_slice] = np.broadcast_to(RightTrunkAnglesROTDeg[..., 0], (_batch_count,))
+        arrayRightTrunkAnglesROT[1][_batch_slice] = np.broadcast_to(RightTrunkAnglesROTDeg[..., 1], (_batch_count,))
+        arrayRightTrunkAnglesROT[2][_batch_slice] = np.broadcast_to(RightTrunkAnglesROTDeg[..., 2], (_batch_count,))
+        arrayRightPelvisAngles[0][_batch_slice] = np.broadcast_to(RightPelvisAnglesDeg[..., 0], (_batch_count,))
+        arrayRightPelvisAngles[1][_batch_slice] = np.broadcast_to(RightPelvisAnglesDeg[..., 1], (_batch_count,))
+        arrayRightPelvisAngles[2][_batch_slice] = np.broadcast_to(RightPelvisAnglesDeg[..., 2], (_batch_count,))
+        arrayRightPelvisAnglesTOR[0][_batch_slice] = np.broadcast_to(RightPelvisAnglesTORDeg[..., 0], (_batch_count,))
+        arrayRightPelvisAnglesTOR[1][_batch_slice] = np.broadcast_to(RightPelvisAnglesTORDeg[..., 1], (_batch_count,))
+        arrayRightPelvisAnglesTOR[2][_batch_slice] = np.broadcast_to(RightPelvisAnglesTORDeg[..., 2], (_batch_count,))
+        arrayRightPelvisAnglesROT[0][_batch_slice] = np.broadcast_to(RightPelvisAnglesROTDeg[..., 0], (_batch_count,))
+        arrayRightPelvisAnglesROT[1][_batch_slice] = np.broadcast_to(RightPelvisAnglesROTDeg[..., 1], (_batch_count,))
+        arrayRightPelvisAnglesROT[2][_batch_slice] = np.broadcast_to(RightPelvisAnglesROTDeg[..., 2], (_batch_count,))
+        arrayRightThighAngles[0][_batch_slice] = np.broadcast_to(RightThighAnglesDeg[..., 0], (_batch_count,))
+        arrayRightThighAngles[1][_batch_slice] = np.broadcast_to(RightThighAnglesDeg[..., 1], (_batch_count,))
+        arrayRightThighAngles[2][_batch_slice] = np.broadcast_to(RightThighAnglesDeg[..., 2], (_batch_count,))
+        arrayRightShankAngles[0][_batch_slice] = np.broadcast_to(RightShankAnglesDeg[..., 0], (_batch_count,))
+        arrayRightShankAngles[1][_batch_slice] = np.broadcast_to(RightShankAnglesDeg[..., 1], (_batch_count,))
+        arrayRightShankAngles[2][_batch_slice] = np.broadcast_to(RightShankAnglesDeg[..., 2], (_batch_count,))
+        arrayRightFootAngles[0][_batch_slice] = np.broadcast_to(RightFootAnglesDeg[..., 0], (_batch_count,))
+        arrayRightFootAngles[1][_batch_slice] = np.broadcast_to(RightFootAnglesDeg[..., 1], (_batch_count,))
+        arrayRightFootAngles[2][_batch_slice] = np.broadcast_to(RightFootAnglesDeg[..., 2], (_batch_count,))
+        if self.valueRightFootModelCheck == '1':
+            arrayRightHindfootAngles[0][_batch_slice] = np.broadcast_to(RightHindfootAnglesRelHFProgressionDeg[..., 0], (_batch_count,))
+            arrayRightHindfootAngles[1][_batch_slice] = np.broadcast_to(RightHindfootAnglesRelHFProgressionDeg[..., 1], (_batch_count,))
+            arrayRightHindfootAngles[2][_batch_slice] = np.broadcast_to(RightHindfootAnglesDeg[..., 2], (_batch_count,))
+            arrayRightForefootAngles[0][_batch_slice] = np.broadcast_to(RightForefootAnglesRelHFProgressionDeg[..., 0], (_batch_count,))
+            arrayRightForefootAngles[1][_batch_slice] = np.broadcast_to(RightForefootAnglesRelHFProgressionDeg[..., 1], (_batch_count,))
+            arrayRightForefootAngles[2][_batch_slice] = np.broadcast_to(RightForefootAnglesDeg[..., 2], (_batch_count,))
+            arrayRightHalluxAngles[0][_batch_slice] = np.broadcast_to(RightHalluxAnglesRelHFProgressionDeg[..., 0], (_batch_count,))
+            arrayRightHalluxAngles[1][_batch_slice] = np.broadcast_to(RightHalluxAnglesRelHFProgressionDeg[..., 1], (_batch_count,))
+            arrayRightHalluxAngles[2][_batch_slice] = np.broadcast_to(RightHalluxAnglesDeg[..., 2], (_batch_count,))
+        arrayRightTrunkAnglesRad[0][_batch_slice] = np.broadcast_to(RightTrunkAnglesRad[..., 0], (_batch_count,))
+        arrayRightTrunkAnglesRad[1][_batch_slice] = np.broadcast_to(RightTrunkAnglesRad[..., 1], (_batch_count,))
+        arrayRightTrunkAnglesRad[2][_batch_slice] = np.broadcast_to(RightTrunkAnglesRad[..., 2], (_batch_count,))
+        arrayRightPelvisAnglesRad[0][_batch_slice] = np.broadcast_to(RightPelvisAnglesRad[..., 0], (_batch_count,))
+        arrayRightPelvisAnglesRad[1][_batch_slice] = np.broadcast_to(RightPelvisAnglesRad[..., 1], (_batch_count,))
+        arrayRightPelvisAnglesRad[2][_batch_slice] = np.broadcast_to(RightPelvisAnglesRad[..., 2], (_batch_count,))
+        arrayRightThighAnglesRad[0][_batch_slice] = np.broadcast_to(RightThighAnglesRad[..., 0], (_batch_count,))
+        arrayRightThighAnglesRad[1][_batch_slice] = np.broadcast_to(RightThighAnglesRad[..., 1], (_batch_count,))
+        arrayRightThighAnglesRad[2][_batch_slice] = np.broadcast_to(RightThighAnglesRad[..., 2], (_batch_count,))
+        arrayRightShankAnglesRad[0][_batch_slice] = np.broadcast_to(RightShankAnglesRad[..., 0], (_batch_count,))
+        arrayRightShankAnglesRad[1][_batch_slice] = np.broadcast_to(RightShankAnglesRad[..., 1], (_batch_count,))
+        arrayRightShankAnglesRad[2][_batch_slice] = np.broadcast_to(RightShankAnglesRad[..., 2], (_batch_count,))
+        arrayRightFootAnglesRad[0][_batch_slice] = np.broadcast_to(RightFootAnglesRad[..., 0], (_batch_count,))
+        arrayRightFootAnglesRad[1][_batch_slice] = np.broadcast_to(RightFootAnglesRad[..., 1], (_batch_count,))
+        arrayRightFootAnglesRad[2][_batch_slice] = np.broadcast_to(RightFootAnglesRad[..., 2], (_batch_count,))
+        if self.valueRightFootModelCheck == '1':
+            arrayRightHindfootAnglesRad[0][_batch_slice] = np.broadcast_to(RightHindfootAnglesRad[..., 0], (_batch_count,))
+            arrayRightHindfootAnglesRad[1][_batch_slice] = np.broadcast_to(RightHindfootAnglesRad[..., 1], (_batch_count,))
+            arrayRightHindfootAnglesRad[2][_batch_slice] = np.broadcast_to(RightHindfootAnglesRad[..., 2], (_batch_count,))
+            arrayRightForefootAnglesRad[0][_batch_slice] = np.broadcast_to(RightForefootAnglesRad[..., 0], (_batch_count,))
+            arrayRightForefootAnglesRad[1][_batch_slice] = np.broadcast_to(RightForefootAnglesRad[..., 1], (_batch_count,))
+            arrayRightForefootAnglesRad[2][_batch_slice] = np.broadcast_to(RightForefootAnglesRad[..., 2], (_batch_count,))
+            arrayRightHalluxAnglesRad[0][_batch_slice] = np.broadcast_to(RightHalluxAnglesRad[..., 0], (_batch_count,))
+            arrayRightHalluxAnglesRad[1][_batch_slice] = np.broadcast_to(RightHalluxAnglesRad[..., 1], (_batch_count,))
+            arrayRightHalluxAnglesRad[2][_batch_slice] = np.broadcast_to(RightHalluxAnglesRad[..., 2], (_batch_count,))
+        arrayLeftHipAngles[0][_batch_slice] = np.broadcast_to(LeftHipAnglesDeg[..., 0], (_batch_count,))
+        arrayLeftHipAngles[1][_batch_slice] = np.broadcast_to(LeftHipAnglesDeg[..., 1], (_batch_count,))
+        arrayLeftHipAngles[2][_batch_slice] = np.broadcast_to(LeftHipAnglesDeg[..., 2], (_batch_count,))
+        arrayLeftKneeAngles[0][_batch_slice] = np.broadcast_to(LeftKneeAnglesDeg[..., 0], (_batch_count,))
+        arrayLeftKneeAngles[1][_batch_slice] = np.broadcast_to(LeftKneeAnglesDeg[..., 1], (_batch_count,))
+        arrayLeftKneeAngles[2][_batch_slice] = np.broadcast_to(LeftKneeAnglesDeg[..., 2], (_batch_count,))
+        arrayLeftKneeAnglesProximal[0][_batch_slice] = np.broadcast_to(LeftKneeAnglesProximalDeg[..., 0], (_batch_count,))
+        arrayLeftKneeAnglesProximal[1][_batch_slice] = np.broadcast_to(LeftKneeAnglesProximalDeg[..., 1], (_batch_count,))
+        arrayLeftKneeAnglesProximal[2][_batch_slice] = np.broadcast_to(LeftKneeAnglesProximalDeg[..., 2], (_batch_count,))
+        arrayLeftKneeAnglesDistal[0][_batch_slice] = np.broadcast_to(LeftKneeAnglesDistalDeg[..., 0], (_batch_count,))
+        arrayLeftKneeAnglesDistal[1][_batch_slice] = np.broadcast_to(LeftKneeAnglesDistalDeg[..., 1], (_batch_count,))
+        arrayLeftKneeAnglesDistal[2][_batch_slice] = np.broadcast_to(LeftKneeAnglesDistalDeg[..., 2], (_batch_count,))
+        arrayLeftAnkleAngles[0][_batch_slice] = np.broadcast_to(LeftAnkleAnglesDeg[..., 0], (_batch_count,))
+        arrayLeftAnkleAngles[1][_batch_slice] = np.broadcast_to(LeftAnkleAnglesDeg[..., 1], (_batch_count,))
+        arrayLeftAnkleAngles[2][_batch_slice] = np.broadcast_to(LeftAnkleAnglesDeg[..., 2], (_batch_count,))
+        if self.valueLeftFootModelCheck == '1':
+            arrayLeftAnkleComplexAngles[0][_batch_slice] = np.broadcast_to(LeftAnkleComplexAnglesDeg[..., 0], (_batch_count,))
+            arrayLeftAnkleComplexAngles[1][_batch_slice] = np.broadcast_to(LeftAnkleComplexAnglesDeg[..., 1], (_batch_count,))
+            arrayLeftAnkleComplexAngles[2][_batch_slice] = np.broadcast_to(LeftAnkleComplexAnglesDeg[..., 2], (_batch_count,))
+            arrayLeftMidfootAngles[0][_batch_slice] = np.broadcast_to(LeftMidfootAnglesDeg[..., 0], (_batch_count,))
+            arrayLeftMidfootAngles[1][_batch_slice] = np.broadcast_to(LeftMidfootAnglesDeg[..., 1], (_batch_count,))
+            arrayLeftMidfootAngles[2][_batch_slice] = np.broadcast_to(LeftMidfootAnglesDeg[..., 2], (_batch_count,))
+            arrayLeftToesAngles[0][_batch_slice] = np.broadcast_to(LeftToesAnglesDeg[..., 0], (_batch_count,))
+            arrayLeftToesAngles[1][_batch_slice] = np.broadcast_to(LeftToesAnglesDeg[..., 1], (_batch_count,))
+            arrayLeftToesAngles[2][_batch_slice] = np.broadcast_to(LeftToesAnglesDeg[..., 2], (_batch_count,))
+            arraySupination[0][_batch_slice] = (
+                np.broadcast_to(np.cos(45 * np.pi / 180) * (LeftMidfootAnglesDeg[..., 2] +
+                LeftAnkleComplexAnglesDeg[..., 0]), (_batch_count,))
+            )
+            arraySkew[0][_batch_slice] = (
+                np.broadcast_to(np.cos(45 * np.pi / 180) * (LeftMidfootAnglesDeg[..., 2] -
+                LeftAnkleComplexAnglesDeg[..., 0]), (_batch_count,))
+            )
+        arrayLeftHipAnglesRad[0][_batch_slice] = np.broadcast_to(LeftHipAnglesRad[..., 0], (_batch_count,))
+        arrayLeftHipAnglesRad[1][_batch_slice] = np.broadcast_to(LeftHipAnglesRad[..., 1], (_batch_count,))
+        arrayLeftHipAnglesRad[2][_batch_slice] = np.broadcast_to(LeftHipAnglesRad[..., 2], (_batch_count,))
+        arrayLeftKneeAnglesRad[0][_batch_slice] = np.broadcast_to(LeftKneeAnglesRad[..., 0], (_batch_count,))
+        arrayLeftKneeAnglesRad[1][_batch_slice] = np.broadcast_to(LeftKneeAnglesRad[..., 1], (_batch_count,))
+        arrayLeftKneeAnglesRad[2][_batch_slice] = np.broadcast_to(LeftKneeAnglesRad[..., 2], (_batch_count,))
+        arrayLeftAnkleAnglesRad[0][_batch_slice] = np.broadcast_to(LeftAnkleAnglesRad[..., 0], (_batch_count,))
+        arrayLeftAnkleAnglesRad[1][_batch_slice] = np.broadcast_to(LeftAnkleAnglesRad[..., 1], (_batch_count,))
+        arrayLeftAnkleAnglesRad[2][_batch_slice] = np.broadcast_to(LeftAnkleAnglesRad[..., 2], (_batch_count,))
+        if self.valueLeftFootModelCheck == '1':
+            arrayLeftAnkleComplexAnglesRad[0][_batch_slice] = np.broadcast_to(LeftAnkleComplexAnglesRad[..., 0], (_batch_count,))
+            arrayLeftAnkleComplexAnglesRad[1][_batch_slice] = np.broadcast_to(LeftAnkleComplexAnglesRad[..., 1], (_batch_count,))
+            arrayLeftAnkleComplexAnglesRad[2][_batch_slice] = np.broadcast_to(LeftAnkleComplexAnglesRad[..., 2], (_batch_count,))
+            arrayLeftMidfootAnglesRad[0][_batch_slice] = np.broadcast_to(LeftMidfootAnglesRad[..., 0], (_batch_count,))
+            arrayLeftMidfootAnglesRad[1][_batch_slice] = np.broadcast_to(LeftMidfootAnglesRad[..., 1], (_batch_count,))
+            arrayLeftMidfootAnglesRad[2][_batch_slice] = np.broadcast_to(LeftMidfootAnglesRad[..., 2], (_batch_count,))
+            arrayLeftToesAnglesRad[0][_batch_slice] = np.broadcast_to(LeftToesAnglesRad[..., 0], (_batch_count,))
+            arrayLeftToesAnglesRad[1][_batch_slice] = np.broadcast_to(LeftToesAnglesRad[..., 1], (_batch_count,))
+            arrayLeftToesAnglesRad[2][_batch_slice] = np.broadcast_to(LeftToesAnglesRad[..., 2], (_batch_count,))
+        arrayRightHipAngles[0][_batch_slice] = np.broadcast_to(RightHipAnglesDeg[..., 0], (_batch_count,))
+        arrayRightHipAngles[1][_batch_slice] = np.broadcast_to(RightHipAnglesDeg[..., 1], (_batch_count,))
+        arrayRightHipAngles[2][_batch_slice] = np.broadcast_to(RightHipAnglesDeg[..., 2], (_batch_count,))
+        arrayRightKneeAngles[0][_batch_slice] = np.broadcast_to(RightKneeAnglesDeg[..., 0], (_batch_count,))
+        arrayRightKneeAngles[1][_batch_slice] = np.broadcast_to(RightKneeAnglesDeg[..., 1], (_batch_count,))
+        arrayRightKneeAngles[2][_batch_slice] = np.broadcast_to(RightKneeAnglesDeg[..., 2], (_batch_count,))
+        arrayRightKneeAnglesProximal[0][_batch_slice] = np.broadcast_to(RightKneeAnglesProximalDeg[..., 0], (_batch_count,))
+        arrayRightKneeAnglesProximal[1][_batch_slice] = np.broadcast_to(RightKneeAnglesProximalDeg[..., 1], (_batch_count,))
+        arrayRightKneeAnglesProximal[2][_batch_slice] = np.broadcast_to(RightKneeAnglesProximalDeg[..., 2], (_batch_count,))
+        arrayRightKneeAnglesDistal[0][_batch_slice] = np.broadcast_to(RightKneeAnglesDistalDeg[..., 0], (_batch_count,))
+        arrayRightKneeAnglesDistal[1][_batch_slice] = np.broadcast_to(RightKneeAnglesDistalDeg[..., 1], (_batch_count,))
+        arrayRightKneeAnglesDistal[2][_batch_slice] = np.broadcast_to(RightKneeAnglesDistalDeg[..., 2], (_batch_count,))
+        arrayRightAnkleAngles[0][_batch_slice] = np.broadcast_to(RightAnkleAnglesDeg[..., 0], (_batch_count,))
+        arrayRightAnkleAngles[1][_batch_slice] = np.broadcast_to(RightAnkleAnglesDeg[..., 1], (_batch_count,))
+        arrayRightAnkleAngles[2][_batch_slice] = np.broadcast_to(RightAnkleAnglesDeg[..., 2], (_batch_count,))
+        if self.valueRightFootModelCheck == '1':
+            arrayRightAnkleComplexAngles[0][_batch_slice] = np.broadcast_to(RightAnkleComplexAnglesDeg[..., 0], (_batch_count,))
+            arrayRightAnkleComplexAngles[1][_batch_slice] = np.broadcast_to(RightAnkleComplexAnglesDeg[..., 1], (_batch_count,))
+            arrayRightAnkleComplexAngles[2][_batch_slice] = np.broadcast_to(RightAnkleComplexAnglesDeg[..., 2], (_batch_count,))
+            arrayRightMidfootAngles[0][_batch_slice] = np.broadcast_to(RightMidfootAnglesDeg[..., 0], (_batch_count,))
+            arrayRightMidfootAngles[1][_batch_slice] = np.broadcast_to(RightMidfootAnglesDeg[..., 1], (_batch_count,))
+            arrayRightMidfootAngles[2][_batch_slice] = np.broadcast_to(RightMidfootAnglesDeg[..., 2], (_batch_count,))
+            arrayRightToesAngles[0][_batch_slice] = np.broadcast_to(RightToesAnglesDeg[..., 0], (_batch_count,))
+            arrayRightToesAngles[1][_batch_slice] = np.broadcast_to(RightToesAnglesDeg[..., 1], (_batch_count,))
+            arrayRightToesAngles[2][_batch_slice] = np.broadcast_to(RightToesAnglesDeg[..., 2], (_batch_count,))
+            arraySupination[1][_batch_slice] = (
+                np.broadcast_to(np.cos(45 * np.pi / 180) * (RightMidfootAnglesDeg[..., 2] +
+                RightAnkleComplexAnglesDeg[..., 0]), (_batch_count,))
+            )
+            arraySkew[1][_batch_slice] = (
+                np.broadcast_to(np.cos(45 * np.pi / 180) * (RightMidfootAnglesDeg[..., 2] -
+                RightAnkleComplexAnglesDeg[..., 0]), (_batch_count,))
+            )
+        arrayRightHipAnglesRad[0][_batch_slice] = np.broadcast_to(RightHipAnglesRad[..., 0], (_batch_count,))
+        arrayRightHipAnglesRad[1][_batch_slice] = np.broadcast_to(RightHipAnglesRad[..., 1], (_batch_count,))
+        arrayRightHipAnglesRad[2][_batch_slice] = np.broadcast_to(RightHipAnglesRad[..., 2], (_batch_count,))
+        arrayRightKneeAnglesRad[0][_batch_slice] = np.broadcast_to(RightKneeAnglesRad[..., 0], (_batch_count,))
+        arrayRightKneeAnglesRad[1][_batch_slice] = np.broadcast_to(RightKneeAnglesRad[..., 1], (_batch_count,))
+        arrayRightKneeAnglesRad[2][_batch_slice] = np.broadcast_to(RightKneeAnglesRad[..., 2], (_batch_count,))
+        arrayRightAnkleAnglesRad[0][_batch_slice] = np.broadcast_to(RightAnkleAnglesRad[..., 0], (_batch_count,))
+        arrayRightAnkleAnglesRad[1][_batch_slice] = np.broadcast_to(RightAnkleAnglesRad[..., 1], (_batch_count,))
+        arrayRightAnkleAnglesRad[2][_batch_slice] = np.broadcast_to(RightAnkleAnglesRad[..., 2], (_batch_count,))
+        if self.valueRightFootModelCheck == '1':
+            arrayRightAnkleComplexAnglesRad[0][_batch_slice] = np.broadcast_to(RightAnkleComplexAnglesRad[..., 0], (_batch_count,))
+            arrayRightAnkleComplexAnglesRad[1][_batch_slice] = np.broadcast_to(RightAnkleComplexAnglesRad[..., 1], (_batch_count,))
+            arrayRightAnkleComplexAnglesRad[2][_batch_slice] = np.broadcast_to(RightAnkleComplexAnglesRad[..., 2], (_batch_count,))
+            arrayRightMidfootAnglesRad[0][_batch_slice] = np.broadcast_to(RightMidfootAnglesRad[..., 0], (_batch_count,))
+            arrayRightMidfootAnglesRad[1][_batch_slice] = np.broadcast_to(RightMidfootAnglesRad[..., 1], (_batch_count,))
+            arrayRightMidfootAnglesRad[2][_batch_slice] = np.broadcast_to(RightMidfootAnglesRad[..., 2], (_batch_count,))
+            arrayRightToesAnglesRad[0][_batch_slice] = np.broadcast_to(RightToesAnglesRad[..., 0], (_batch_count,))
+            arrayRightToesAnglesRad[1][_batch_slice] = np.broadcast_to(RightToesAnglesRad[..., 1], (_batch_count,))
+            arrayRightToesAnglesRad[2][_batch_slice] = np.broadcast_to(RightToesAnglesRad[..., 2], (_batch_count,))
+        arrayGluteusMaxLength[0][_batch_slice] = (
+            np.broadcast_to((LeftGMaS + LeftGMaM + LeftGMaI) / (LeftGMaS0 + LeftGMaM0 + LeftGMaI0),
+            (_batch_count,))
+        )
+        arrayGluteusMaxLength[1][_batch_slice] = (
+            np.broadcast_to((RightGMaS + RightGMaM + RightGMaI) / (RightGMaS0 + RightGMaM0 + RightGMaI0),
+            (_batch_count,))
+        )
+        arrayIlioPsoasLength[0][_batch_slice] = np.broadcast_to((LeftIlia + LeftPsoa) / (LeftIlia0 + LeftPsoa0), (_batch_count,))
+        arrayIlioPsoasLength[1][_batch_slice] = np.broadcast_to((RightIlia + RightPsoa) / (RightIlia0 + RightPsoa0), (_batch_count,))
+        arrayRectFemLength[0][_batch_slice] = np.broadcast_to(LeftReFe / LeftReFe0, (_batch_count,))
+        arrayRectFemLength[1][_batch_slice] = np.broadcast_to(RightReFe / RightReFe0, (_batch_count,))
+        arrayMedHamstringLength[0][_batch_slice] = np.broadcast_to((LeftSeMe + LeftSeTe) / (LeftSeMe0 + LeftSeTe0), (_batch_count,))
+        arrayMedHamstringLength[1][_batch_slice] = np.broadcast_to((RightSeMe + RightSeTe) / (RightSeMe0 + RightSeTe0), (_batch_count,))
+        arrayLatHamstringLength[0][_batch_slice] = np.broadcast_to((LeftBiFL + LeftBiFS) / (LeftBiFL0 + LeftBiFS0), (_batch_count,))
+        arrayLatHamstringLength[1][_batch_slice] = np.broadcast_to((RightBiFL + RightBiFS) / (RightBiFL0 + RightBiFS0), (_batch_count,))
+        arrayGastrocLength[0][_batch_slice] = np.broadcast_to((LeftGaMe + LeftGaLa) / (LeftGaMe0 + LeftGaLa0), (_batch_count,))
+        arrayGastrocLength[1][_batch_slice] = np.broadcast_to((RightGaMe + RightGaLa) / (RightGaMe0 + RightGaLa0), (_batch_count,))
+        arraySoleusLength[0][_batch_slice] = np.broadcast_to(LeftSole / LeftSole0, (_batch_count,))
+        arraySoleusLength[1][_batch_slice] = np.broadcast_to(RightSole / RightSole0, (_batch_count,))
+        arrayTibPostLength[0][_batch_slice] = np.broadcast_to(LeftTiPo / LeftTiPo0, (_batch_count,))
+        arrayTibPostLength[1][_batch_slice] = np.broadcast_to(RightTiPo / RightTiPo0, (_batch_count,))
+        arrayPeronealLength[0][_batch_slice] = np.broadcast_to((LeftPeBr + LeftPeLn) / (LeftPeBr0 + LeftPeLn0), (_batch_count,))
+        arrayPeronealLength[1][_batch_slice] = np.broadcast_to((RightPeBr + RightPeLn) / (RightPeBr0 + RightPeLn0), (_batch_count,))
+        arrayVastusLatLength[0][_batch_slice] = np.broadcast_to(LeftVaLa / LeftVaLa0, (_batch_count,))
+        arrayVastusLatLength[1][_batch_slice] = np.broadcast_to(RightVaLa / RightVaLa0, (_batch_count,))
+        if TrunkFlag == 1:
+            HATCenterOfMass = math.MassCenter(ShouldersCenterLab, PelvisCenterLab, 0.374)
+        else:
+            HATCenterOfMass = math.FrameVector(_batch_count, 0.0, 0.0, 0.0)
+        LeftThighCenterOfMass = math.MassCenter(LeftHipCenterLab, LeftKneeCenterLab, 0.567)
+        LeftShankCenterOfMass = math.MassCenter(LeftKneeCenterLab, LeftAnkleCenterLab, 0.567)
+        LeftFootCenterOfMass = math.MassCenter(LeftAnkleCenterLab, LeftToeMarker, 0.5)
+        RightThighCenterOfMass = math.MassCenter(RightHipCenterLab, RightKneeCenterLab, 0.567)
+        RightShankCenterOfMass = math.MassCenter(RightKneeCenterLab, RightAnkleCenterLab, 0.567)
+        RightFootCenterOfMass = math.MassCenter(RightAnkleCenterLab, RightToeMarker, 0.5)
+        arrayHATCenterOfMass[0][_batch_slice] = np.broadcast_to(Direction * HATCenterOfMass[..., 0], (_batch_count,))
+        arrayHATCenterOfMass[1][_batch_slice] = np.broadcast_to(Direction * HATCenterOfMass[..., 1], (_batch_count,))
+        arrayHATCenterOfMass[2][_batch_slice] = np.broadcast_to(HATCenterOfMass[..., 2], (_batch_count,))
+        arrayLeftThighCenterOfMass[0][_batch_slice] = np.broadcast_to(Direction * LeftThighCenterOfMass[..., 0], (_batch_count,))
+        arrayLeftThighCenterOfMass[1][_batch_slice] = np.broadcast_to(Direction * LeftThighCenterOfMass[..., 1], (_batch_count,))
+        arrayLeftThighCenterOfMass[2][_batch_slice] = np.broadcast_to(LeftThighCenterOfMass[..., 2], (_batch_count,))
+        arrayLeftShankCenterOfMass[0][_batch_slice] = np.broadcast_to(Direction * LeftShankCenterOfMass[..., 0], (_batch_count,))
+        arrayLeftShankCenterOfMass[1][_batch_slice] = np.broadcast_to(Direction * LeftShankCenterOfMass[..., 1], (_batch_count,))
+        arrayLeftShankCenterOfMass[2][_batch_slice] = np.broadcast_to(LeftShankCenterOfMass[..., 2], (_batch_count,))
+        arrayLeftFootCenterOfMass[0][_batch_slice] = np.broadcast_to(Direction * LeftFootCenterOfMass[..., 0], (_batch_count,))
+        arrayLeftFootCenterOfMass[1][_batch_slice] = np.broadcast_to(Direction * LeftFootCenterOfMass[..., 1], (_batch_count,))
+        arrayLeftFootCenterOfMass[2][_batch_slice] = np.broadcast_to(LeftFootCenterOfMass[..., 2], (_batch_count,))
+        arrayRightThighCenterOfMass[0][_batch_slice] = np.broadcast_to(Direction * RightThighCenterOfMass[..., 0], (_batch_count,))
+        arrayRightThighCenterOfMass[1][_batch_slice] = np.broadcast_to(Direction * RightThighCenterOfMass[..., 1], (_batch_count,))
+        arrayRightThighCenterOfMass[2][_batch_slice] = np.broadcast_to(RightThighCenterOfMass[..., 2], (_batch_count,))
+        arrayRightShankCenterOfMass[0][_batch_slice] = np.broadcast_to(Direction * RightShankCenterOfMass[..., 0], (_batch_count,))
+        arrayRightShankCenterOfMass[1][_batch_slice] = np.broadcast_to(Direction * RightShankCenterOfMass[..., 1], (_batch_count,))
+        arrayRightShankCenterOfMass[2][_batch_slice] = np.broadcast_to(RightShankCenterOfMass[..., 2], (_batch_count,))
+        arrayRightFootCenterOfMass[0][_batch_slice] = np.broadcast_to(Direction * RightFootCenterOfMass[..., 0], (_batch_count,))
+        arrayRightFootCenterOfMass[1][_batch_slice] = np.broadcast_to(Direction * RightFootCenterOfMass[..., 1], (_batch_count,))
+        arrayRightFootCenterOfMass[2][_batch_slice] = np.broadcast_to(RightFootCenterOfMass[..., 2], (_batch_count,))
 
         # =============================================================================
         #         Write Kinematics Outputs to C3D File
@@ -4479,12 +2920,7 @@ class Dynamic_Main:
         # 1- Ab/Adduction
         # 2- Int/Ext Rotation
         def reArrangeArray(InputArray):
-            ReArrangedArray = [[0.0 for m in range(framecount)] for n in range(3)]
-            for i in range(framecount):
-                ReArrangedArray[1][i] = InputArray[0][i]
-                ReArrangedArray[0][i] = InputArray[1][i]
-                ReArrangedArray[2][i] = InputArray[2][i]
-            return ReArrangedArray
+            return np.asarray(InputArray)[[1, 0, 2], :framecount].tolist()
 
         # Rearrange Angles arrays before writing to C3D
         ReArranged_arrayLeftTrunkAngles = reArrangeArray(arrayLeftTrunkAngles)
@@ -5542,922 +3978,461 @@ class Dynamic_Main:
             LeftAnklePower = np.array([0.0, 0.0, 0.0])
             LeftKneePower = np.array([0.0, 0.0, 0.0])
             LeftHipPower = np.array([0.0, 0.0, 0.0])
-            for FrameNumber in range(StartFrame, EndFrame):
-                Sign = -1  # Left Side
-
-                # Transform marker data if necessary based on direction that the patient is walking
-
-                SacralMarker = np.array(
-                    [
-                        Direction * SacralMarkerX[FrameNumber],
-                        Direction * SacralMarkerY[FrameNumber],
-                        SacralMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftASISMarker = np.array(
-                    [
-                        Direction * LeftASISMarkerX[FrameNumber],
-                        Direction * LeftASISMarkerY[FrameNumber],
-                        LeftASISMarkerZ[FrameNumber],
-                    ]
-                )
-                RightASISMarker = np.array(
-                    [
-                        Direction * RightASISMarkerX[FrameNumber],
-                        Direction * RightASISMarkerY[FrameNumber],
-                        RightASISMarkerZ[FrameNumber],
-                    ]
-                )
-
-                LeftThighMarker = np.array(
-                    [
-                        Direction * LeftThighMarkerX[FrameNumber],
-                        Direction * LeftThighMarkerY[FrameNumber],
-                        LeftThighMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftLateralKneeMarker = np.array(
-                    [
-                        Direction * LeftLateralKneeMarkerX[FrameNumber],
-                        Direction * LeftLateralKneeMarkerY[FrameNumber],
-                        LeftLateralKneeMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftTibialMarker = np.array(
-                    [
-                        Direction * LeftTibialMarkerX[FrameNumber],
-                        Direction * LeftTibialMarkerY[FrameNumber],
-                        LeftTibialMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftLateralAnkleMarker = np.array(
-                    [
-                        Direction * LeftLateralAnkleMarkerX[FrameNumber],
-                        Direction * LeftLateralAnkleMarkerY[FrameNumber],
-                        LeftLateralAnkleMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftToeMarker = np.array(
-                    [
-                        Direction * LeftToeMarkerX[FrameNumber],
-                        Direction * LeftToeMarkerY[FrameNumber],
-                        LeftToeMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftMedialAnkleMarker = np.array(
-                    [
-                        Direction * LeftMedialAnkleMarkerX[FrameNumber],
-                        Direction * LeftMedialAnkleMarkerY[FrameNumber],
-                        LeftMedialAnkleMarkerZ[FrameNumber],
-                    ]
-                )
-                LeftHeelMarker = np.array(
-                    [
-                        Direction * LeftHeelMarkerX[FrameNumber],
-                        Direction * LeftHeelMarkerY[FrameNumber],
-                        LeftHeelMarkerZ[FrameNumber],
-                    ]
-                )
-                if LeftTibialTriadCheck is True:
-                    LeftTibialUpperMarker = np.array(
-                        [
-                            Direction * LeftTibialUpperMarkerX[FrameNumber],
-                            Direction * LeftTibialUpperMarkerY[FrameNumber],
-                            LeftTibialUpperMarkerZ[FrameNumber],
-                        ]
-                    )
-                    LeftTibialLowerMarker = np.array(
-                        [
-                            Direction * LeftTibialLowerMarkerX[FrameNumber],
-                            Direction * LeftTibialLowerMarkerY[FrameNumber],
-                            LeftTibialLowerMarkerZ[FrameNumber],
-                        ]
-                    )
-                # Transform joint center data if necessary based on direction that the patient is walking
-                LeftHipCenterLab = np.array(
-                    [
-                        Direction * arrayLeftHipCenter[0][FrameNumber],
-                        Direction * arrayLeftHipCenter[1][FrameNumber],
-                        arrayLeftHipCenter[2][FrameNumber],
-                    ]
-                )
-                LeftKneeCenterLab = np.array(
-                    [
-                        Direction * arrayLeftKneeCenter[0][FrameNumber],
-                        Direction * arrayLeftKneeCenter[1][FrameNumber],
-                        arrayLeftKneeCenter[2][FrameNumber],
-                    ]
-                )
-                LeftAnkleCenterLab = np.array(
-                    [
-                        Direction * arrayLeftAnkleCenter[0][FrameNumber],
-                        Direction * arrayLeftAnkleCenter[1][FrameNumber],
-                        arrayLeftAnkleCenter[2][FrameNumber],
-                    ]
-                )
-                # Transform center of mass data if necessary based on direction that the patient is walking
-                LeftThighCenterOfMass = np.array(
-                    [
-                        Direction * arrayLeftThighCenterOfMass[0][FrameNumber],
-                        Direction * arrayLeftThighCenterOfMass[1][FrameNumber],
-                        arrayLeftThighCenterOfMass[2][FrameNumber],
-                    ]
-                )
-                LeftShankCenterOfMass = np.array(
-                    [
-                        Direction * arrayLeftShankCenterOfMass[0][FrameNumber],
-                        Direction * arrayLeftShankCenterOfMass[1][FrameNumber],
-                        arrayLeftShankCenterOfMass[2][FrameNumber],
-                    ]
-                )
-                LeftFootCenterOfMass = np.array(
-                    [
-                        Direction * arrayLeftFootCenterOfMass[0][FrameNumber],
-                        Direction * arrayLeftFootCenterOfMass[1][FrameNumber],
-                        arrayLeftFootCenterOfMass[2][FrameNumber],
-                    ]
-                )
-
-                # Compute centroidal radii of gyration (Convert from mm to meters)
-                LeftThighRadiusOfGyration = (
-                    math.RadiusOfGyration(
-                        LeftHipCenterLab, LeftKneeCenterLab, 0.323, 0.323, 0.187
-                    )
-                    / 1e3
-                )
-                LeftShankRadiusOfGyration = (
-                    math.RadiusOfGyration(
-                        LeftKneeCenterLab, LeftAnkleCenterLab, 0.302, 0.302, 0.087
-                    )
-                    / 1e3
-                )
-                LeftFootRadiusOfGyration = (
-                    math.RadiusOfGyration(
-                        LeftAnkleCenterLab, LeftToeMarker, 0.148, 0.475, 0.475
-                    )
-                    / 1e3
-                )
-
-                # Compute segmental mass moment of inertia
-                LeftThighMassMomentOfInertia = ThighMass * np.square(
-                    LeftThighRadiusOfGyration
-                )
-                LeftShankMassMomentOfInertia = ShankMass * np.square(
-                    LeftShankRadiusOfGyration
-                )
-                LeftFootMassMomentOfInertia = FootMass * np.square(
-                    LeftFootRadiusOfGyration
-                )
-
-                FP_FrameNumber = int(FrameNumber * FP_FrameRate / MarkerFrameRate)
-                # Marker/force-plate frame counts don't always line up exactly at the
-                # end of the trial (rounding, or one fewer FP sample than markers);
-                # clamp to the last available FP sample rather than indexing past it.
-                FP_FrameNumber = min(FP_FrameNumber, FP_MaxIndex)
-
-                # Compute Vertical Torque (Mz is dependent on COP location)
-                Tz = (
-                    arrayMz[FP_FrameNumber]
-                    + arrayFx[FP_FrameNumber]
-                    * (arrayCOPy[FP_FrameNumber] - FP_Center[1] + FP_Origin[1])
-                    - arrayFy[FP_FrameNumber]
-                    * (arrayCOPx[FP_FrameNumber] - FP_Center[0] + FP_Origin[0])
-                )
-
-                # Account for Walking Direction
-                # Compute Reaction force as opposite of force plate output
-                GRF[0] = -Direction * arrayFx[FP_FrameNumber]
-                GRF[1] = -Direction * arrayFy[FP_FrameNumber]
-                GRF[2] = -arrayFz[FP_FrameNumber]
-                GRT[2] = -Tz / 1e3  # Convert from mm to meters
-
-                # Center of Pressure is already in lab/global coordinate system
-                COP[0] = Direction * arrayCOPx[FP_FrameNumber]
-                COP[1] = Direction * arrayCOPy[FP_FrameNumber]
-                COP[2] = 0
-
-                ############ Compute Anatomical Coordinate Systems ###################
-                [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(
-                    LeftASISMarker, RightASISMarker, SacralMarker
-                )
-                EPelvisAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueEPelvisAnatRelTech, EPelvisTech
-                )
-                LeftEThighTech = gait.TechCS_Thigh_Newington(
-                    "Left", LeftHipCenterLab, LeftThighMarker, LeftLateralKneeMarker
-                )
-                LeftEThighAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueLeftEThighAnatRelTech, LeftEThighTech
-                )
-                if LeftTibialTriadCheck is True:
-                    LeftEShankTech = gait.TechCS_Shank_Newington(
-                        "Left",
-                        LeftTibialUpperMarker,
-                        LeftTibialLowerMarker,
-                        LeftTibialMarker,
-                    )
-                else:
-                    LeftEShankTech = gait.TechCS_Shank_Newington(
-                        "Left",
-                        LeftKneeCenterLab,
-                        LeftTibialMarker,
-                        LeftLateralAnkleMarker,
-                    )
-                LeftEShankProximalAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueLeftEShankProximalAnatRelTech, LeftEShankTech
-                )
-                LeftEShankDistalAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueLeftEShankDistalAnatRelTech, LeftEShankTech
-                )
-                # If Medial ankle is available,then recompute Shank Proximal/Distal Anatomical Coordinate System
-                if LeftMedialAnkleMarkerDropOff == 0:
-                    LeftEShankProximalAnat = gait.AnatCS_Shank_Proximal_Newington(
-                        "Left",
-                        LeftKneeCenterLab,
-                        LeftLateralKneeMarker,
-                        LeftAnkleCenterLab,
-                    )
-                    LeftEShankDistalAnat = gait.AnatCS_Shank_Distal_VCM(
-                        "Left",
-                        LeftKneeCenterLab,
-                        LeftAnkleCenterLab,
-                        LeftLateralAnkleMarker,
-                    )
-                LeftEFootTech = gait.TechCS_Foot_Newington(
-                    "Left", LeftKneeCenterLab, LeftAnkleCenterLab, LeftToeMarker
-                )
-                LeftEFootAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueLeftEFootAnatRelTech, LeftEFootTech
-                )
-                try:
-                    LeftEFootTibAnat = math.TransformAnatCoorSysFromTechCoors(
-                        self.valueLeftEFootAnat2RelTech, LeftEFootTech
-                    )
-                except:
-                    LeftEFootTibAnat = np.matrix(
-                        [[0.0 for m in range(3)] for n in range(3)]
-                    )
-                #######################################################################################################
-
-                # ============================== Ankle ====================================
-                # All Distances are in mm. Account for conversion to meters
-                LeftAnkleForceLab[0] = (
-                    FootMass
-                    * Direction
-                    * arrayLeftFootLinearAccelerationLab[0][FrameNumber]
-                    / 1e3
-                    - GRF[0]
-                )
-                LeftAnkleForceLab[1] = (
-                    FootMass
-                    * Direction
-                    * arrayLeftFootLinearAccelerationLab[1][FrameNumber]
-                    / 1e3
-                    - GRF[1]
-                )
-                LeftAnkleForceLab[2] = (
-                    FootMass * arrayLeftFootLinearAccelerationLab[2][FrameNumber] / 1e3
-                    - GRF[2]
-                    + FootMass * 9.81
-                )
-
-                # vector from center of mass to proximal point of load application
-                ProximalVector = LeftAnkleCenterLab - LeftFootCenterOfMass
-                # vector from center of mass to distal point of load application
-                DistalVector = COP - LeftFootCenterOfMass
-
-                MomentFromProximalForce = (
-                    np.cross(ProximalVector, LeftAnkleForceLab) / 1e3
-                )  # Convert from mm to meters
-                MomentFromDistalForce = (
-                    np.cross(DistalVector, GRF) / 1e3
-                )  # Convert from mm to meters
-
-                # Transform to Foot Coordinate System
-                MomentFromProximalForce_Foot = math.TransformVectorIntoMovingCoors(
-                    MomentFromProximalForce, LeftEFootAnat
-                )
-                MomentfromDistalForce_Foot = math.TransformVectorIntoMovingCoors(
-                    MomentFromDistalForce, LeftEFootAnat
-                )
-                GRT_Foot = math.TransformVectorIntoMovingCoors(GRT, LeftEFootAnat)
-                LeftFootAnglesVelocityLab = np.array(
-                    [
-                        arrayLeftFootAnglesVelocityLab[0][FrameNumber],
-                        arrayLeftFootAnglesVelocityLab[1][FrameNumber],
-                        arrayLeftFootAnglesVelocityLab[2][FrameNumber],
-                    ]
-                )
-                LeftFootAnglesAccelerationLab = np.array(
-                    [
-                        arrayLeftFootAnglesAccelerationLab[0][FrameNumber],
-                        arrayLeftFootAnglesAccelerationLab[1][FrameNumber],
-                        arrayLeftFootAnglesAccelerationLab[2][FrameNumber],
-                    ]
-                )
-                LeftAnkleAnglesVelocityShank = np.array(
-                    [
-                        arrayLeftAnkleAnglesVelocityShank[0][FrameNumber],
-                        arrayLeftAnkleAnglesVelocityShank[1][FrameNumber],
-                        arrayLeftAnkleAnglesVelocityShank[2][FrameNumber],
-                    ]
-                )
-                LeftFootAnglesVelocity_Foot = math.TransformVectorIntoMovingCoors(
-                    LeftFootAnglesVelocityLab, LeftEFootAnat
-                )
-                LeftFootAnglesAcceleration_Foot = math.TransformVectorIntoMovingCoors(
-                    LeftFootAnglesAccelerationLab, LeftEFootAnat
-                )
-                # Joint velocity is in proximal segment CS. Transform to Distal
-                if self.ShankCoordinateSystem == "Distal":
-                    LeftAnkleAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                        LeftAnkleAnglesVelocityShank, LeftEShankDistalAnat
-                    )
-                if self.ShankCoordinateSystem == "Proximal":
-                    LeftAnkleAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                        LeftAnkleAnglesVelocityShank, LeftEShankProximalAnat
-                    )
-                LeftAnkleAnglesVelocity_Foot = math.TransformVectorIntoMovingCoors(
-                    LeftAnkleAnglesVelocityLab, LeftEFootAnat
-                )
-
-                LeftAnkleMoment_Foot[0] = (
-                    LeftFootMassMomentOfInertia[0] * LeftFootAnglesAcceleration_Foot[0]
-                    + (LeftFootMassMomentOfInertia[2] - LeftFootMassMomentOfInertia[1])
-                    * LeftFootAnglesVelocity_Foot[1]
-                    * LeftFootAnglesVelocity_Foot[2]
-                    - MomentFromProximalForce_Foot[0]
-                    - MomentfromDistalForce_Foot[0]
-                    - GRT_Foot[0]
-                )
-                LeftAnkleMoment_Foot[1] = (
-                    LeftFootMassMomentOfInertia[1] * LeftFootAnglesAcceleration_Foot[1]
-                    + (LeftFootMassMomentOfInertia[0] - LeftFootMassMomentOfInertia[2])
-                    * LeftFootAnglesVelocity_Foot[2]
-                    * LeftFootAnglesVelocity_Foot[0]
-                    - MomentFromProximalForce_Foot[1]
-                    - MomentfromDistalForce_Foot[1]
-                    - GRT_Foot[1]
-                )
-                LeftAnkleMoment_Foot[2] = (
-                    LeftFootMassMomentOfInertia[2] * LeftFootAnglesAcceleration_Foot[2]
-                    + (LeftFootMassMomentOfInertia[1] - LeftFootMassMomentOfInertia[0])
-                    * LeftFootAnglesVelocity_Foot[0]
-                    * LeftFootAnglesVelocity_Foot[1]
-                    - MomentFromProximalForce_Foot[2]
-                    - MomentfromDistalForce_Foot[2]
-                    - GRT_Foot[2]
-                )
-
-                # Transform Ankle Moment to Lab coordinate system
-                LeftAnkleMomentLab = math.TransformVectorIntoLabCoors(
-                    LeftAnkleMoment_Foot, LeftEFootAnat
-                )
-
-                LeftAnklePower[0] = (
-                    LeftAnkleMoment_Foot[0] * LeftAnkleAnglesVelocity_Foot[0]
-                )
-                LeftAnklePower[1] = (
-                    LeftAnkleMoment_Foot[1] * LeftAnkleAnglesVelocity_Foot[1]
-                )
-                LeftAnklePower[2] = (
-                    LeftAnkleMoment_Foot[2] * LeftAnkleAnglesVelocity_Foot[2]
-                )
-
-                LeftAnklePowerTotal = np.dot(
-                    LeftAnkleMoment_Foot, LeftAnkleAnglesVelocity_Foot
-                )
-
-                # Normalize and Store in array
-                # Apply sign convention based on right versus left side & plotting convention
-                # Internal Moments that are Extensor, Abductor, External Rotator are positive
-                arrayLeftAnkleMoment[0][FrameNumber] = (
-                    -Sign * LeftAnkleMoment_Foot[0] / float(self.valueBodyMass)
-                )
-                arrayLeftAnkleMoment[1][FrameNumber] = LeftAnkleMoment_Foot[1] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftAnkleMoment[2][FrameNumber] = (
-                    -Sign * LeftAnkleMoment_Foot[2] / float(self.valueBodyMass)
-                )
-
-                arrayLeftAnklePower[0][FrameNumber] = LeftAnklePower[0] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftAnklePower[1][FrameNumber] = LeftAnklePower[1] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftAnklePower[2][FrameNumber] = LeftAnklePower[2] / float(
-                    self.valueBodyMass
-                )
-
-                arrayLeftAnklePowerTotal[0][FrameNumber] = 0
-                arrayLeftAnklePowerTotal[1][FrameNumber] = 0
-                arrayLeftAnklePowerTotal[2][FrameNumber] = LeftAnklePowerTotal / float(
-                    self.valueBodyMass
-                )
-
-                # Transform Ankle Force into Foot CS: X=AP, Y=ML, Z=SI (Do Not Re-arrange these)
-                LeftAnkleForceFoot = math.TransformVectorIntoMovingCoors(
-                    LeftAnkleForceLab, LeftEFootTibAnat
-                )
-                arrayLeftAnkleJRF[0][FrameNumber] = LeftAnkleForceFoot[0] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftAnkleJRF[1][FrameNumber] = (
-                    Sign * LeftAnkleForceFoot[1] / float(self.valueBodyMass)
-                )
-                arrayLeftAnkleJRF[2][FrameNumber] = LeftAnkleForceFoot[2] / float(
-                    self.valueBodyMass
-                )
-
-                # ============================== Knee ====================================
-                # Reverse sign of force and moment from Distal Segment
-                LeftAnkleForceLab = -LeftAnkleForceLab
-                LeftAnkleMomentLab = -LeftAnkleMomentLab
-
-                # All Distances are in mm. Account for conversion to meters
-                LeftKneeForceLab[0] = (
-                    ShankMass
-                    * Direction
-                    * arrayLeftShankLinearAccelerationLab[0][FrameNumber]
-                    / 1e3
-                    - LeftAnkleForceLab[0]
-                )
-                LeftKneeForceLab[1] = (
-                    ShankMass
-                    * Direction
-                    * arrayLeftShankLinearAccelerationLab[1][FrameNumber]
-                    / 1e3
-                    - LeftAnkleForceLab[1]
-                )
-                LeftKneeForceLab[2] = (
-                    ShankMass
-                    * arrayLeftShankLinearAccelerationLab[2][FrameNumber]
-                    / 1e3
-                    - LeftAnkleForceLab[2]
-                    + FootMass * 9.81
-                )
-
-                # vector from center of mass to proximal point of load application
-                ProximalVector = LeftKneeCenterLab - LeftShankCenterOfMass
-                # vector from center of mass to distal point of load application
-                DistalVector = LeftAnkleCenterLab - LeftShankCenterOfMass
-
-                MomentFromProximalForce = (
-                    np.cross(ProximalVector, LeftKneeForceLab) / 1e3
-                )  # Convert from mm to meters
-                MomentFromDistalForce = (
-                    np.cross(DistalVector, LeftAnkleForceLab) / 1e3
-                )  # Convert from mm to meters
-
-                # Tranform to Shank Coordinate System
-                if self.ShankCoordinateSystem == "Distal":
-                    MomentFromProximalForce_Shank = math.TransformVectorIntoMovingCoors(
-                        MomentFromProximalForce, LeftEShankDistalAnat
-                    )
-                    MomentfromDistalForce_Shank = math.TransformVectorIntoMovingCoors(
-                        MomentFromDistalForce, LeftEShankDistalAnat
-                    )
-                    LeftAnkleMoment_Shank = math.TransformVectorIntoMovingCoors(
-                        LeftAnkleMomentLab, LeftEShankDistalAnat
-                    )
-                    LeftShankAnglesVelocityLab = np.array(
-                        [
-                            arrayLeftShankAnglesVelocityLab[0][FrameNumber],
-                            arrayLeftShankAnglesVelocityLab[1][FrameNumber],
-                            arrayLeftShankAnglesVelocityLab[2][FrameNumber],
-                        ]
-                    )
-                    LeftShankAnglesAccelerationLab = np.array(
-                        [
-                            arrayLeftShankAnglesAccelerationLab[0][FrameNumber],
-                            arrayLeftShankAnglesAccelerationLab[1][FrameNumber],
-                            arrayLeftShankAnglesAccelerationLab[2][FrameNumber],
-                        ]
-                    )
-                    LeftKneeAnglesVelocityThigh = np.array(
-                        [
-                            arrayLeftKneeAnglesVelocityThigh[0][FrameNumber],
-                            arrayLeftKneeAnglesVelocityThigh[1][FrameNumber],
-                            arrayLeftKneeAnglesVelocityThigh[2][FrameNumber],
-                        ]
-                    )
-                    LeftShankAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(
-                        LeftShankAnglesVelocityLab, LeftEShankDistalAnat
-                    )
-                    LeftShankAnglesAcceleration_Shank = (
-                        math.TransformVectorIntoMovingCoors(
-                            LeftShankAnglesAccelerationLab, LeftEShankDistalAnat
-                        )
-                    )
-                    # Joint velocity is in proximal segment CS. Transform to Distal
-                    LeftKneeAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                        LeftKneeAnglesVelocityThigh, LeftEThighAnat
-                    )
-                    LeftKneeAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(
-                        LeftKneeAnglesVelocityLab, LeftEShankDistalAnat
-                    )
-                if self.ShankCoordinateSystem == "Proximal":
-                    MomentFromProximalForce_Shank = math.TransformVectorIntoMovingCoors(
-                        MomentFromProximalForce, LeftEShankProximalAnat
-                    )
-                    MomentfromDistalForce_Shank = math.TransformVectorIntoMovingCoors(
-                        MomentFromDistalForce, LeftEShankProximalAnat
-                    )
-                    LeftAnkleMoment_Shank = math.TransformVectorIntoMovingCoors(
-                        LeftAnkleMomentLab, LeftEShankProximalAnat
-                    )
-                    LeftShankAnglesVelocityLab = np.array(
-                        [
-                            arrayLeftShankAnglesVelocityLab[0][FrameNumber],
-                            arrayLeftShankAnglesVelocityLab[1][FrameNumber],
-                            arrayLeftShankAnglesVelocityLab[2][FrameNumber],
-                        ]
-                    )
-                    LeftShankAnglesAccelerationLab = np.array(
-                        [
-                            arrayLeftShankAnglesAccelerationLab[0][FrameNumber],
-                            arrayLeftShankAnglesAccelerationLab[1][FrameNumber],
-                            arrayLeftShankAnglesAccelerationLab[2][FrameNumber],
-                        ]
-                    )
-                    LeftKneeAnglesVelocityThigh = np.array(
-                        [
-                            arrayLeftKneeAnglesVelocityThigh[0][FrameNumber],
-                            arrayLeftKneeAnglesVelocityThigh[1][FrameNumber],
-                            arrayLeftKneeAnglesVelocityThigh[2][FrameNumber],
-                        ]
-                    )
-                    LeftShankAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(
-                        LeftShankAnglesVelocityLab, LeftEShankProximalAnat
-                    )
-                    LeftShankAnglesAcceleration_Shank = (
-                        math.TransformVectorIntoMovingCoors(
-                            LeftShankAnglesAccelerationLab, LeftEShankProximalAnat
-                        )
-                    )
-                    # Joint velocity is in proximal segment CS. Transform to Distal
-                    LeftKneeAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                        LeftKneeAnglesVelocityThigh, LeftEThighAnat
-                    )
-                    LeftKneeAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(
-                        LeftKneeAnglesVelocityLab, LeftEShankProximalAnat
-                    )
-
-                LeftKneeMoment_Shank[0] = (
-                    LeftShankMassMomentOfInertia[0]
-                    * LeftShankAnglesAcceleration_Shank[0]
-                    + (
-                        LeftShankMassMomentOfInertia[2]
-                        - LeftShankMassMomentOfInertia[1]
-                    )
-                    * LeftShankAnglesVelocity_Shank[1]
-                    * LeftShankAnglesVelocity_Shank[2]
-                    - MomentFromProximalForce_Shank[0]
-                    - MomentfromDistalForce_Shank[0]
-                    - LeftAnkleMoment_Shank[0]
-                )
-                LeftKneeMoment_Shank[1] = (
-                    LeftShankMassMomentOfInertia[1]
-                    * LeftShankAnglesAcceleration_Shank[1]
-                    + (
-                        LeftShankMassMomentOfInertia[0]
-                        - LeftShankMassMomentOfInertia[2]
-                    )
-                    * LeftShankAnglesVelocity_Shank[2]
-                    * LeftShankAnglesVelocity_Shank[0]
-                    - MomentFromProximalForce_Shank[1]
-                    - MomentfromDistalForce_Shank[1]
-                    - LeftAnkleMoment_Shank[1]
-                )
-                LeftKneeMoment_Shank[2] = (
-                    LeftShankMassMomentOfInertia[2]
-                    * LeftShankAnglesAcceleration_Shank[2]
-                    + (
-                        LeftShankMassMomentOfInertia[1]
-                        - LeftShankMassMomentOfInertia[0]
-                    )
-                    * LeftShankAnglesVelocity_Shank[0]
-                    * LeftShankAnglesVelocity_Shank[1]
-                    - MomentFromProximalForce_Shank[2]
-                    - MomentfromDistalForce_Shank[2]
-                    - LeftAnkleMoment_Shank[2]
-                )
-
-                # Transform Knee Moment to Lab coordinate system
-                if self.ShankCoordinateSystem == "Distal":
-                    LeftKneeMomentLab = math.TransformVectorIntoLabCoors(
-                        LeftKneeMoment_Shank, LeftEShankDistalAnat
-                    )
-                if self.ShankCoordinateSystem == "Proximal":
-                    LeftKneeMomentLab = math.TransformVectorIntoLabCoors(
-                        LeftKneeMoment_Shank, LeftEShankProximalAnat
-                    )
-
-                LeftKneePower[0] = (
-                    LeftKneeMoment_Shank[0] * LeftKneeAnglesVelocity_Shank[0]
-                )
-                LeftKneePower[1] = (
-                    LeftKneeMoment_Shank[1] * LeftKneeAnglesVelocity_Shank[1]
-                )
-                LeftKneePower[2] = (
-                    LeftKneeMoment_Shank[2] * LeftKneeAnglesVelocity_Shank[2]
-                )
-
-                LeftKneePowerTotal = np.dot(
-                    LeftKneeMoment_Shank, LeftKneeAnglesVelocity_Shank
-                )
-
-                # Normalize and Store in array
-                arrayLeftKneeMoment[0][FrameNumber] = (
-                    -Sign * LeftKneeMoment_Shank[0] / float(self.valueBodyMass)
-                )
-                arrayLeftKneeMoment[1][FrameNumber] = -LeftKneeMoment_Shank[1] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftKneeMoment[2][FrameNumber] = (
-                    -Sign * LeftKneeMoment_Shank[2] / float(self.valueBodyMass)
-                )
-
-                arrayLeftKneePower[0][FrameNumber] = LeftKneePower[0] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftKneePower[1][FrameNumber] = LeftKneePower[1] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftKneePower[2][FrameNumber] = LeftKneePower[2] / float(
-                    self.valueBodyMass
-                )
-
-                arrayLeftKneePowerTotal[0][FrameNumber] = 0
-                arrayLeftKneePowerTotal[1][FrameNumber] = 0
-                arrayLeftKneePowerTotal[2][FrameNumber] = LeftKneePowerTotal / float(
-                    self.valueBodyMass
-                )
-
-                # Transform Knee Force into Proximal Tibia CS
-                LeftKneeForceTib = math.TransformVectorIntoMovingCoors(
-                    LeftKneeForceLab, LeftEShankProximalAnat
-                )
-                arrayLeftKneeJRF[0][FrameNumber] = LeftKneeForceTib[0] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftKneeJRF[1][FrameNumber] = (
-                    Sign * LeftKneeForceTib[1] / float(self.valueBodyMass)
-                )
-                arrayLeftKneeJRF[2][FrameNumber] = LeftKneeForceTib[2] / float(
-                    self.valueBodyMass
-                )
-
-                # ============================== Hip ====================================
-                # Reverse sign of force and moment from Distal Segment
-                LeftKneeForceLab = -LeftKneeForceLab
-                LeftKneeMomentLab = -LeftKneeMomentLab
-
-                # All Distances are in mm. Account for conversion to meters
-                LeftHipForceLab[0] = (
-                    ThighMass
-                    * Direction
-                    * arrayLeftThighLinearAccelerationLab[0][FrameNumber]
-                    / 1e3
-                    - LeftKneeForceLab[0]
-                )
-                LeftHipForceLab[1] = (
-                    ThighMass
-                    * Direction
-                    * arrayLeftThighLinearAccelerationLab[1][FrameNumber]
-                    / 1e3
-                    - LeftKneeForceLab[1]
-                )
-                LeftHipForceLab[2] = (
-                    ThighMass
-                    * arrayLeftThighLinearAccelerationLab[2][FrameNumber]
-                    / 1e3
-                    - LeftKneeForceLab[2]
-                    + FootMass * 9.81
-                )
-
-                # vector from center of mass to proximal point of load application
-                ProximalVector = LeftHipCenterLab - LeftThighCenterOfMass
-                # vector from center of mass to distal point of load application
-                DistalVector = LeftKneeCenterLab - LeftThighCenterOfMass
-
-                MomentFromProximalForce = (
-                    np.cross(ProximalVector, LeftHipForceLab) / 1e3
-                )  # Convert from mm to meters
-                MomentFromDistalForce = (
-                    np.cross(DistalVector, LeftKneeForceLab) / 1e3
-                )  # Convert from mm to meters
-
-                # Transform to Thigh Coordinate System
-                MomentFromProximalForce_Thigh = math.TransformVectorIntoMovingCoors(
-                    MomentFromProximalForce, LeftEThighAnat
-                )
-                MomentfromDistalForce_Thigh = math.TransformVectorIntoMovingCoors(
-                    MomentFromDistalForce, LeftEThighAnat
-                )
-                LeftKneeMoment_Thigh = math.TransformVectorIntoMovingCoors(
-                    LeftKneeMomentLab, LeftEThighAnat
-                )
-                LeftThighAnglesVelocityLab = np.array(
-                    [
-                        arrayLeftThighAnglesVelocityLab[0][FrameNumber],
-                        arrayLeftThighAnglesVelocityLab[1][FrameNumber],
-                        arrayLeftThighAnglesVelocityLab[2][FrameNumber],
-                    ]
-                )
-                LeftThighAnglesAccelerationLab = np.array(
-                    [
-                        arrayLeftThighAnglesAccelerationLab[0][FrameNumber],
-                        arrayLeftThighAnglesAccelerationLab[1][FrameNumber],
-                        arrayLeftThighAnglesAccelerationLab[2][FrameNumber],
-                    ]
-                )
-                LeftHipAnglesVelocityPelvis = np.array(
-                    [
-                        arrayLeftHipAnglesVelocityPelvis[0][FrameNumber],
-                        arrayLeftHipAnglesVelocityPelvis[1][FrameNumber],
-                        arrayLeftHipAnglesVelocityPelvis[2][FrameNumber],
-                    ]
-                )
-                LeftThighAnglesVelocity_Thigh = math.TransformVectorIntoMovingCoors(
-                    LeftThighAnglesVelocityLab, LeftEThighAnat
-                )
-                LeftThighAnglesAcceleration_Thigh = math.TransformVectorIntoMovingCoors(
-                    LeftThighAnglesAccelerationLab, LeftEThighAnat
-                )
-                # Joint velocity is in proximal segment CS. Transform to Distal
-                LeftHipAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                    LeftHipAnglesVelocityPelvis, EPelvisAnat
-                )
-                LeftHipAnglesVelocity_Thigh = math.TransformVectorIntoMovingCoors(
-                    LeftHipAnglesVelocityLab, LeftEThighAnat
-                )
-
-                LeftHipMoment_Thigh[0] = (
-                    LeftThighMassMomentOfInertia[0]
-                    * LeftThighAnglesAcceleration_Thigh[0]
-                    + (
-                        LeftThighMassMomentOfInertia[2]
-                        - LeftThighMassMomentOfInertia[1]
-                    )
-                    * LeftThighAnglesVelocity_Thigh[1]
-                    * LeftThighAnglesVelocity_Thigh[2]
-                    - MomentFromProximalForce_Thigh[0]
-                    - MomentfromDistalForce_Thigh[0]
-                    - LeftKneeMoment_Thigh[0]
-                )
-                LeftHipMoment_Thigh[1] = (
-                    LeftThighMassMomentOfInertia[1]
-                    * LeftThighAnglesAcceleration_Thigh[1]
-                    + (
-                        LeftThighMassMomentOfInertia[0]
-                        - LeftThighMassMomentOfInertia[2]
-                    )
-                    * LeftThighAnglesVelocity_Thigh[2]
-                    * LeftThighAnglesVelocity_Thigh[0]
-                    - MomentFromProximalForce_Thigh[1]
-                    - MomentfromDistalForce_Thigh[1]
-                    - LeftKneeMoment_Thigh[1]
-                )
-                LeftHipMoment_Thigh[2] = (
-                    LeftThighMassMomentOfInertia[2]
-                    * LeftThighAnglesAcceleration_Thigh[2]
-                    + (
-                        LeftThighMassMomentOfInertia[1]
-                        - LeftThighMassMomentOfInertia[0]
-                    )
-                    * LeftThighAnglesVelocity_Thigh[0]
-                    * LeftThighAnglesVelocity_Thigh[1]
-                    - MomentFromProximalForce_Thigh[2]
-                    - MomentfromDistalForce_Thigh[2]
-                    - LeftKneeMoment_Thigh[2]
-                )
-
-                # Transform Hip Moment to Lab coordinate system
-                LeftHipMomentLab = math.TransformVectorIntoLabCoors(
-                    LeftHipMoment_Thigh, LeftEThighAnat
-                )
-
-                LeftHipPower[0] = (
-                    LeftHipMoment_Thigh[0] * LeftHipAnglesVelocity_Thigh[0]
-                )
-                LeftHipPower[1] = (
-                    LeftHipMoment_Thigh[1] * LeftHipAnglesVelocity_Thigh[1]
-                )
-                LeftHipPower[2] = (
-                    LeftHipMoment_Thigh[2] * LeftHipAnglesVelocity_Thigh[2]
-                )
-
-                LeftHipPowerTotal = np.dot(
-                    LeftHipMoment_Thigh, LeftHipAnglesVelocity_Thigh
-                )
-
-                # Normalize and Store in array
-                arrayLeftHipMoment[0][FrameNumber] = (
-                    -Sign * LeftHipMoment_Thigh[0] / float(self.valueBodyMass)
-                )
-                arrayLeftHipMoment[1][FrameNumber] = LeftHipMoment_Thigh[1] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftHipMoment[2][FrameNumber] = (
-                    -Sign * LeftHipMoment_Thigh[2] / float(self.valueBodyMass)
-                )
-
-                arrayLeftHipPower[0][FrameNumber] = LeftHipPower[0] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftHipPower[1][FrameNumber] = LeftHipPower[1] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftHipPower[2][FrameNumber] = LeftHipPower[2] / float(
-                    self.valueBodyMass
-                )
-
-                arrayLeftHipPowerTotal[0][FrameNumber] = 0
-                arrayLeftHipPowerTotal[1][FrameNumber] = 0
-                arrayLeftHipPowerTotal[2][FrameNumber] = LeftHipPowerTotal / float(
-                    self.valueBodyMass
-                )
-
-                # Transform Hip Force into Thigh CS
-                LeftHipForceThigh = math.TransformVectorIntoMovingCoors(
-                    LeftHipForceLab, LeftEThighAnat
-                )
-                arrayLeftHipJRF[0][FrameNumber] = LeftHipForceThigh[0] / float(
-                    self.valueBodyMass
-                )
-                arrayLeftHipJRF[1][FrameNumber] = (
-                    Sign * LeftHipForceThigh[1] / float(self.valueBodyMass)
-                )
-                arrayLeftHipJRF[2][FrameNumber] = LeftHipForceThigh[2] / float(
-                    self.valueBodyMass
-                )
-                # Correct for Lab CS
-                GRF = math.TransformVectorIntoMovingCoors(GRF, ELab)
-                # Write back to GRM, account for side for ML, and scale to BW
-                arrayLeftGRF[0][FrameNumber] = GRF[0] / float(self.valueBodyMass)
-                arrayLeftGRF[1][FrameNumber] = Sign * GRF[1] / float(self.valueBodyMass)
-                arrayLeftGRF[2][FrameNumber] = GRF[2] / float(self.valueBodyMass)
-
-                arrayLeftGRM[0][FrameNumber] = (
-                    arrayCOPx[FP_FrameNumber] - arrayPelvisOrigin[0][FrameNumber]
-                )
-                arrayLeftGRM[1][FrameNumber] = (
-                    arrayCOPy[FP_FrameNumber] - arrayPelvisOrigin[1][FrameNumber]
-                )
-                arrayLeftGRM[2][FrameNumber] = Sign * GRT[2] / float(self.valueBodyMass)
-
-                # Store in array of one frame
-                COP_Pelvis = np.array(
-                    [
-                        arrayLeftGRM[0][FrameNumber],
-                        arrayLeftGRM[1][FrameNumber],
-                        arrayLeftGRM[2][FrameNumber],
-                    ]
-                )
-                # Correct for Lab CS
-                COP_Pelvis = math.TransformVectorIntoMovingCoors(COP_Pelvis, ELab)
-                # Write back to GRM, account for walk direction and side for ML, and scale to % leg length
-                arrayLeftGRM[0][FrameNumber] = (
-                    100 * Direction * COP_Pelvis[0] / self.valueLeftLegLength
-                )
-                arrayLeftGRM[1][FrameNumber] = (
-                    100 * Direction * Sign * COP_Pelvis[1] / self.valueLeftLegLength
-                )
-
-                # Add Moment and Power Sums
-                # Index 0 is sum of sagittal plane moment, Index 1 is sum of sagittal power, Index3 is sum of total power
-                arrayLeftMPSum[0][FrameNumber] = (
-                    arrayLeftHipMoment[0][FrameNumber]
-                    + arrayLeftKneeMoment[0][FrameNumber]
-                    + arrayLeftAnkleMoment[0][FrameNumber]
-                )
-                arrayLeftMPSum[1][FrameNumber] = (
-                    arrayLeftHipPower[0][FrameNumber]
-                    + arrayLeftKneePower[0][FrameNumber]
-                    + arrayLeftAnklePower[0][FrameNumber]
-                )
-                arrayLeftMPSum[2][FrameNumber] = (
-                    arrayLeftHipPowerTotal[2][FrameNumber]
-                    + arrayLeftKneePowerTotal[2][FrameNumber]
-                    + arrayLeftAnklePowerTotal[2][FrameNumber]
-                )
-
-                # Add Foot CoP, compute components first and foot length
-                AnkleCOP = COP - LeftAnkleCenterLab
-                AnkleCOP[2] = 0
-                AnkleCOP_Foot = math.TransformVectorIntoMovingCoors(
-                    AnkleCOP, LeftEFootAnat
-                )
-                FL = np.linalg.norm(LeftToeMarker - LeftAnkleCenterLab)
-                # Normalize
-                AnkleCOP_Foot_Normalized = 100 * AnkleCOP_Foot / FL
-                # Account for foot progression angle and account for walk direction and M/L
-                arrayLeftFootCoP[0][FrameNumber] = AnkleCOP_Foot_Normalized[0]
-                arrayLeftFootCoP[1][FrameNumber] = AnkleCOP_Foot_Normalized[1]
-                arrayLeftFootCoP[2][FrameNumber] = 0
+            # Batched left distal-to-proximal inverse dynamics.
+            _batch_frames = np.arange(StartFrame, EndFrame)
+            _batch_slice = slice(StartFrame, EndFrame)
+            _batch_count = len(_batch_frames)
+            COP = np.broadcast_to(COP, (_batch_count, 3)).copy()
+            GRF = np.broadcast_to(GRF, (_batch_count, 3)).copy()
+            GRT = np.broadcast_to(GRT, (_batch_count, 3)).copy()
+            LeftAnkleForceLab = np.broadcast_to(LeftAnkleForceLab, (_batch_count, 3)).copy()
+            LeftAnkleMoment_Foot = np.broadcast_to(LeftAnkleMoment_Foot, (_batch_count, 3)).copy()
+            LeftAnklePower = np.broadcast_to(LeftAnklePower, (_batch_count, 3)).copy()
+            LeftHipForceLab = np.broadcast_to(LeftHipForceLab, (_batch_count, 3)).copy()
+            LeftHipMoment_Thigh = np.broadcast_to(LeftHipMoment_Thigh, (_batch_count, 3)).copy()
+            LeftHipPower = np.broadcast_to(LeftHipPower, (_batch_count, 3)).copy()
+            LeftKneeForceLab = np.broadcast_to(LeftKneeForceLab, (_batch_count, 3)).copy()
+            LeftKneeMoment_Shank = np.broadcast_to(LeftKneeMoment_Shank, (_batch_count, 3)).copy()
+            LeftKneePower = np.broadcast_to(LeftKneePower, (_batch_count, 3)).copy()
+            Sign = -1
+            SacralMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(SacralMarkerX)[_batch_slice], Direction *
+                np.asarray(SacralMarkerY)[_batch_slice], np.asarray(SacralMarkerZ)[_batch_slice])
+            )
+            LeftASISMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftASISMarkerX)[_batch_slice], Direction *
+                np.asarray(LeftASISMarkerY)[_batch_slice], np.asarray(LeftASISMarkerZ)[_batch_slice])
+            )
+            RightASISMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightASISMarkerX)[_batch_slice], Direction *
+                np.asarray(RightASISMarkerY)[_batch_slice], np.asarray(RightASISMarkerZ)[_batch_slice])
+            )
+            LeftThighMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftThighMarkerX)[_batch_slice], Direction *
+                np.asarray(LeftThighMarkerY)[_batch_slice], np.asarray(LeftThighMarkerZ)[_batch_slice])
+            )
+            LeftLateralKneeMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftLateralKneeMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftLateralKneeMarkerY)[_batch_slice],
+                np.asarray(LeftLateralKneeMarkerZ)[_batch_slice])
+            )
+            LeftTibialMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftTibialMarkerX)[_batch_slice], Direction *
+                np.asarray(LeftTibialMarkerY)[_batch_slice], np.asarray(LeftTibialMarkerZ)[_batch_slice])
+            )
+            LeftLateralAnkleMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftLateralAnkleMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftLateralAnkleMarkerY)[_batch_slice],
+                np.asarray(LeftLateralAnkleMarkerZ)[_batch_slice])
+            )
+            LeftToeMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftToeMarkerX)[_batch_slice], Direction *
+                np.asarray(LeftToeMarkerY)[_batch_slice], np.asarray(LeftToeMarkerZ)[_batch_slice])
+            )
+            LeftMedialAnkleMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftMedialAnkleMarkerX)[_batch_slice],
+                Direction * np.asarray(LeftMedialAnkleMarkerY)[_batch_slice],
+                np.asarray(LeftMedialAnkleMarkerZ)[_batch_slice])
+            )
+            LeftHeelMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftHeelMarkerX)[_batch_slice], Direction *
+                np.asarray(LeftHeelMarkerY)[_batch_slice], np.asarray(LeftHeelMarkerZ)[_batch_slice])
+            )
+            if LeftTibialTriadCheck is True:
+                LeftTibialUpperMarker = (
+                    math.FrameVector(_batch_count, Direction * np.asarray(LeftTibialUpperMarkerX)[_batch_slice],
+                    Direction * np.asarray(LeftTibialUpperMarkerY)[_batch_slice],
+                    np.asarray(LeftTibialUpperMarkerZ)[_batch_slice])
+                )
+                LeftTibialLowerMarker = (
+                    math.FrameVector(_batch_count, Direction * np.asarray(LeftTibialLowerMarkerX)[_batch_slice],
+                    Direction * np.asarray(LeftTibialLowerMarkerY)[_batch_slice],
+                    np.asarray(LeftTibialLowerMarkerZ)[_batch_slice])
+                )
+            LeftHipCenterLab = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayLeftHipCenter[0])[_batch_slice],
+                Direction * np.asarray(arrayLeftHipCenter[1])[_batch_slice],
+                np.asarray(arrayLeftHipCenter[2])[_batch_slice])
+            )
+            LeftKneeCenterLab = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayLeftKneeCenter[0])[_batch_slice],
+                Direction * np.asarray(arrayLeftKneeCenter[1])[_batch_slice],
+                np.asarray(arrayLeftKneeCenter[2])[_batch_slice])
+            )
+            LeftAnkleCenterLab = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayLeftAnkleCenter[0])[_batch_slice],
+                Direction * np.asarray(arrayLeftAnkleCenter[1])[_batch_slice],
+                np.asarray(arrayLeftAnkleCenter[2])[_batch_slice])
+            )
+            LeftThighCenterOfMass = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayLeftThighCenterOfMass[0])[_batch_slice],
+                Direction * np.asarray(arrayLeftThighCenterOfMass[1])[_batch_slice],
+                np.asarray(arrayLeftThighCenterOfMass[2])[_batch_slice])
+            )
+            LeftShankCenterOfMass = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayLeftShankCenterOfMass[0])[_batch_slice],
+                Direction * np.asarray(arrayLeftShankCenterOfMass[1])[_batch_slice],
+                np.asarray(arrayLeftShankCenterOfMass[2])[_batch_slice])
+            )
+            LeftFootCenterOfMass = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayLeftFootCenterOfMass[0])[_batch_slice],
+                Direction * np.asarray(arrayLeftFootCenterOfMass[1])[_batch_slice],
+                np.asarray(arrayLeftFootCenterOfMass[2])[_batch_slice])
+            )
+            LeftThighRadiusOfGyration = math.RadiusOfGyration(LeftHipCenterLab, LeftKneeCenterLab, 0.323, 0.323, 0.187) / 1000.0
+            LeftShankRadiusOfGyration = math.RadiusOfGyration(LeftKneeCenterLab, LeftAnkleCenterLab, 0.302, 0.302, 0.087) / 1000.0
+            LeftFootRadiusOfGyration = math.RadiusOfGyration(LeftAnkleCenterLab, LeftToeMarker, 0.148, 0.475, 0.475) / 1000.0
+            LeftThighMassMomentOfInertia = ThighMass * np.square(LeftThighRadiusOfGyration)
+            LeftShankMassMomentOfInertia = ShankMass * np.square(LeftShankRadiusOfGyration)
+            LeftFootMassMomentOfInertia = FootMass * np.square(LeftFootRadiusOfGyration)
+            FP_FrameNumber = np.asarray(_batch_frames * FP_FrameRate / MarkerFrameRate, dtype=np.intp)
+            FP_FrameNumber = np.minimum(FP_FrameNumber, FP_MaxIndex)
+            Tz = (
+                np.asarray(arrayMz)[FP_FrameNumber] + np.asarray(arrayFx)[FP_FrameNumber] *
+                (np.asarray(arrayCOPy)[FP_FrameNumber] - FP_Center[1] + FP_Origin[1]) -
+                np.asarray(arrayFy)[FP_FrameNumber] * (np.asarray(arrayCOPx)[FP_FrameNumber] - FP_Center[0] +
+                FP_Origin[0])
+            )
+            GRF[..., 0] = -Direction * np.asarray(arrayFx)[FP_FrameNumber]
+            GRF[..., 1] = -Direction * np.asarray(arrayFy)[FP_FrameNumber]
+            GRF[..., 2] = -np.asarray(arrayFz)[FP_FrameNumber]
+            GRT[..., 2] = -Tz / 1000.0
+            COP[..., 0] = Direction * np.asarray(arrayCOPx)[FP_FrameNumber]
+            COP[..., 1] = Direction * np.asarray(arrayCOPy)[FP_FrameNumber]
+            COP[..., 2] = 0
+            [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(LeftASISMarker, RightASISMarker, SacralMarker)
+            EPelvisAnat = math.TransformAnatCoorSysFromTechCoors(self.valueEPelvisAnatRelTech, EPelvisTech)
+            LeftEThighTech = gait.TechCS_Thigh_Newington('Left', LeftHipCenterLab, LeftThighMarker, LeftLateralKneeMarker)
+            LeftEThighAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEThighAnatRelTech, LeftEThighTech)
+            if LeftTibialTriadCheck is True:
+                LeftEShankTech = gait.TechCS_Shank_Newington('Left', LeftTibialUpperMarker, LeftTibialLowerMarker, LeftTibialMarker)
+            else:
+                LeftEShankTech = gait.TechCS_Shank_Newington('Left', LeftKneeCenterLab, LeftTibialMarker, LeftLateralAnkleMarker)
+            LeftEShankProximalAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEShankProximalAnatRelTech, LeftEShankTech)
+            LeftEShankDistalAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEShankDistalAnatRelTech, LeftEShankTech)
+            if LeftMedialAnkleMarkerDropOff == 0:
+                LeftEShankProximalAnat = (
+                    gait.AnatCS_Shank_Proximal_Newington('Left', LeftKneeCenterLab, LeftLateralKneeMarker,
+                    LeftAnkleCenterLab)
+                )
+                LeftEShankDistalAnat = gait.AnatCS_Shank_Distal_VCM('Left', LeftKneeCenterLab, LeftAnkleCenterLab, LeftLateralAnkleMarker)
+            LeftEFootTech = gait.TechCS_Foot_Newington('Left', LeftKneeCenterLab, LeftAnkleCenterLab, LeftToeMarker)
+            LeftEFootAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEFootAnatRelTech, LeftEFootTech)
+            try:
+                LeftEFootTibAnat = math.TransformAnatCoorSysFromTechCoors(self.valueLeftEFootAnat2RelTech, LeftEFootTech)
+            except:
+                LeftEFootTibAnat = np.matrix([[0.0 for m in range(3)] for n in range(3)])
+            # Ankle stage: all frames, using measured force-plate samples.
+            LeftAnkleForceLab[..., 0] = (
+                FootMass * Direction * np.asarray(arrayLeftFootLinearAccelerationLab[0])[_batch_slice] / 1000.0 -
+                GRF[..., 0]
+            )
+            LeftAnkleForceLab[..., 1] = (
+                FootMass * Direction * np.asarray(arrayLeftFootLinearAccelerationLab[1])[_batch_slice] / 1000.0 -
+                GRF[..., 1]
+            )
+            LeftAnkleForceLab[..., 2] = (
+                FootMass * np.asarray(arrayLeftFootLinearAccelerationLab[2])[_batch_slice] / 1000.0 - GRF[..., 2] +
+                FootMass * 9.81
+            )
+            ProximalVector = LeftAnkleCenterLab - LeftFootCenterOfMass
+            DistalVector = COP - LeftFootCenterOfMass
+            MomentFromProximalForce = np.cross(ProximalVector, LeftAnkleForceLab) / 1000.0
+            MomentFromDistalForce = np.cross(DistalVector, GRF) / 1000.0
+            MomentFromProximalForce_Foot = math.TransformVectorIntoMovingCoors(MomentFromProximalForce, LeftEFootAnat)
+            MomentfromDistalForce_Foot = math.TransformVectorIntoMovingCoors(MomentFromDistalForce, LeftEFootAnat)
+            GRT_Foot = math.TransformVectorIntoMovingCoors(GRT, LeftEFootAnat)
+            LeftFootAnglesVelocityLab = (
+                math.FrameVector(_batch_count, np.asarray(arrayLeftFootAnglesVelocityLab[0])[_batch_slice],
+                np.asarray(arrayLeftFootAnglesVelocityLab[1])[_batch_slice],
+                np.asarray(arrayLeftFootAnglesVelocityLab[2])[_batch_slice])
+            )
+            LeftFootAnglesAccelerationLab = (
+                math.FrameVector(_batch_count, np.asarray(arrayLeftFootAnglesAccelerationLab[0])[_batch_slice],
+                np.asarray(arrayLeftFootAnglesAccelerationLab[1])[_batch_slice],
+                np.asarray(arrayLeftFootAnglesAccelerationLab[2])[_batch_slice])
+            )
+            LeftAnkleAnglesVelocityShank = (
+                math.FrameVector(_batch_count, np.asarray(arrayLeftAnkleAnglesVelocityShank[0])[_batch_slice],
+                np.asarray(arrayLeftAnkleAnglesVelocityShank[1])[_batch_slice],
+                np.asarray(arrayLeftAnkleAnglesVelocityShank[2])[_batch_slice])
+            )
+            LeftFootAnglesVelocity_Foot = math.TransformVectorIntoMovingCoors(LeftFootAnglesVelocityLab, LeftEFootAnat)
+            LeftFootAnglesAcceleration_Foot = math.TransformVectorIntoMovingCoors(LeftFootAnglesAccelerationLab, LeftEFootAnat)
+            if self.ShankCoordinateSystem == 'Distal':
+                LeftAnkleAnglesVelocityLab = math.TransformVectorIntoLabCoors(LeftAnkleAnglesVelocityShank, LeftEShankDistalAnat)
+            if self.ShankCoordinateSystem == 'Proximal':
+                LeftAnkleAnglesVelocityLab = math.TransformVectorIntoLabCoors(LeftAnkleAnglesVelocityShank, LeftEShankProximalAnat)
+            LeftAnkleAnglesVelocity_Foot = math.TransformVectorIntoMovingCoors(LeftAnkleAnglesVelocityLab, LeftEFootAnat)
+            LeftAnkleMoment_Foot[..., 0] = (
+                LeftFootMassMomentOfInertia[..., 0] * LeftFootAnglesAcceleration_Foot[..., 0] +
+                (LeftFootMassMomentOfInertia[..., 2] - LeftFootMassMomentOfInertia[..., 1]) *
+                LeftFootAnglesVelocity_Foot[..., 1] * LeftFootAnglesVelocity_Foot[..., 2] -
+                MomentFromProximalForce_Foot[..., 0] - MomentfromDistalForce_Foot[..., 0] - GRT_Foot[..., 0]
+            )
+            LeftAnkleMoment_Foot[..., 1] = (
+                LeftFootMassMomentOfInertia[..., 1] * LeftFootAnglesAcceleration_Foot[..., 1] +
+                (LeftFootMassMomentOfInertia[..., 0] - LeftFootMassMomentOfInertia[..., 2]) *
+                LeftFootAnglesVelocity_Foot[..., 2] * LeftFootAnglesVelocity_Foot[..., 0] -
+                MomentFromProximalForce_Foot[..., 1] - MomentfromDistalForce_Foot[..., 1] - GRT_Foot[..., 1]
+            )
+            LeftAnkleMoment_Foot[..., 2] = (
+                LeftFootMassMomentOfInertia[..., 2] * LeftFootAnglesAcceleration_Foot[..., 2] +
+                (LeftFootMassMomentOfInertia[..., 1] - LeftFootMassMomentOfInertia[..., 0]) *
+                LeftFootAnglesVelocity_Foot[..., 0] * LeftFootAnglesVelocity_Foot[..., 1] -
+                MomentFromProximalForce_Foot[..., 2] - MomentfromDistalForce_Foot[..., 2] - GRT_Foot[..., 2]
+            )
+            LeftAnkleMomentLab = math.TransformVectorIntoLabCoors(LeftAnkleMoment_Foot, LeftEFootAnat)
+            LeftAnklePower[..., 0] = LeftAnkleMoment_Foot[..., 0] * LeftAnkleAnglesVelocity_Foot[..., 0]
+            LeftAnklePower[..., 1] = LeftAnkleMoment_Foot[..., 1] * LeftAnkleAnglesVelocity_Foot[..., 1]
+            LeftAnklePower[..., 2] = LeftAnkleMoment_Foot[..., 2] * LeftAnkleAnglesVelocity_Foot[..., 2]
+            LeftAnklePowerTotal = np.sum(LeftAnkleMoment_Foot * LeftAnkleAnglesVelocity_Foot, axis=-1)
+            arrayLeftAnkleMoment[0][_batch_slice] = np.broadcast_to(-Sign * LeftAnkleMoment_Foot[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftAnkleMoment[1][_batch_slice] = np.broadcast_to(LeftAnkleMoment_Foot[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftAnkleMoment[2][_batch_slice] = np.broadcast_to(-Sign * LeftAnkleMoment_Foot[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftAnklePower[0][_batch_slice] = np.broadcast_to(LeftAnklePower[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftAnklePower[1][_batch_slice] = np.broadcast_to(LeftAnklePower[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftAnklePower[2][_batch_slice] = np.broadcast_to(LeftAnklePower[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftAnklePowerTotal[0][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayLeftAnklePowerTotal[1][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayLeftAnklePowerTotal[2][_batch_slice] = np.broadcast_to(LeftAnklePowerTotal / float(self.valueBodyMass), (_batch_count,))
+            LeftAnkleForceFoot = math.TransformVectorIntoMovingCoors(LeftAnkleForceLab, LeftEFootTibAnat)
+            arrayLeftAnkleJRF[0][_batch_slice] = np.broadcast_to(LeftAnkleForceFoot[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftAnkleJRF[1][_batch_slice] = np.broadcast_to(Sign * LeftAnkleForceFoot[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftAnkleJRF[2][_batch_slice] = np.broadcast_to(LeftAnkleForceFoot[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            LeftAnkleForceLab = -LeftAnkleForceLab
+            LeftAnkleMomentLab = -LeftAnkleMomentLab
+            # Knee stage depends on the completed ankle forces and moments.
+            LeftKneeForceLab[..., 0] = (
+                ShankMass * Direction * np.asarray(arrayLeftShankLinearAccelerationLab[0])[_batch_slice] / 1000.0 -
+                LeftAnkleForceLab[..., 0]
+            )
+            LeftKneeForceLab[..., 1] = (
+                ShankMass * Direction * np.asarray(arrayLeftShankLinearAccelerationLab[1])[_batch_slice] / 1000.0 -
+                LeftAnkleForceLab[..., 1]
+            )
+            LeftKneeForceLab[..., 2] = (
+                ShankMass * np.asarray(arrayLeftShankLinearAccelerationLab[2])[_batch_slice] / 1000.0 -
+                LeftAnkleForceLab[..., 2] + FootMass * 9.81
+            )
+            ProximalVector = LeftKneeCenterLab - LeftShankCenterOfMass
+            DistalVector = LeftAnkleCenterLab - LeftShankCenterOfMass
+            MomentFromProximalForce = np.cross(ProximalVector, LeftKneeForceLab) / 1000.0
+            MomentFromDistalForce = np.cross(DistalVector, LeftAnkleForceLab) / 1000.0
+            if self.ShankCoordinateSystem == 'Distal':
+                MomentFromProximalForce_Shank = math.TransformVectorIntoMovingCoors(MomentFromProximalForce, LeftEShankDistalAnat)
+                MomentfromDistalForce_Shank = math.TransformVectorIntoMovingCoors(MomentFromDistalForce, LeftEShankDistalAnat)
+                LeftAnkleMoment_Shank = math.TransformVectorIntoMovingCoors(LeftAnkleMomentLab, LeftEShankDistalAnat)
+                LeftShankAnglesVelocityLab = (
+                    math.FrameVector(_batch_count, np.asarray(arrayLeftShankAnglesVelocityLab[0])[_batch_slice],
+                    np.asarray(arrayLeftShankAnglesVelocityLab[1])[_batch_slice],
+                    np.asarray(arrayLeftShankAnglesVelocityLab[2])[_batch_slice])
+                )
+                LeftShankAnglesAccelerationLab = (
+                    math.FrameVector(_batch_count, np.asarray(arrayLeftShankAnglesAccelerationLab[0])[_batch_slice],
+                    np.asarray(arrayLeftShankAnglesAccelerationLab[1])[_batch_slice],
+                    np.asarray(arrayLeftShankAnglesAccelerationLab[2])[_batch_slice])
+                )
+                LeftKneeAnglesVelocityThigh = (
+                    math.FrameVector(_batch_count, np.asarray(arrayLeftKneeAnglesVelocityThigh[0])[_batch_slice],
+                    np.asarray(arrayLeftKneeAnglesVelocityThigh[1])[_batch_slice],
+                    np.asarray(arrayLeftKneeAnglesVelocityThigh[2])[_batch_slice])
+                )
+                LeftShankAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(LeftShankAnglesVelocityLab, LeftEShankDistalAnat)
+                LeftShankAnglesAcceleration_Shank = math.TransformVectorIntoMovingCoors(LeftShankAnglesAccelerationLab, LeftEShankDistalAnat)
+                LeftKneeAnglesVelocityLab = math.TransformVectorIntoLabCoors(LeftKneeAnglesVelocityThigh, LeftEThighAnat)
+                LeftKneeAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(LeftKneeAnglesVelocityLab, LeftEShankDistalAnat)
+            if self.ShankCoordinateSystem == 'Proximal':
+                MomentFromProximalForce_Shank = math.TransformVectorIntoMovingCoors(MomentFromProximalForce, LeftEShankProximalAnat)
+                MomentfromDistalForce_Shank = math.TransformVectorIntoMovingCoors(MomentFromDistalForce, LeftEShankProximalAnat)
+                LeftAnkleMoment_Shank = math.TransformVectorIntoMovingCoors(LeftAnkleMomentLab, LeftEShankProximalAnat)
+                LeftShankAnglesVelocityLab = (
+                    math.FrameVector(_batch_count, np.asarray(arrayLeftShankAnglesVelocityLab[0])[_batch_slice],
+                    np.asarray(arrayLeftShankAnglesVelocityLab[1])[_batch_slice],
+                    np.asarray(arrayLeftShankAnglesVelocityLab[2])[_batch_slice])
+                )
+                LeftShankAnglesAccelerationLab = (
+                    math.FrameVector(_batch_count, np.asarray(arrayLeftShankAnglesAccelerationLab[0])[_batch_slice],
+                    np.asarray(arrayLeftShankAnglesAccelerationLab[1])[_batch_slice],
+                    np.asarray(arrayLeftShankAnglesAccelerationLab[2])[_batch_slice])
+                )
+                LeftKneeAnglesVelocityThigh = (
+                    math.FrameVector(_batch_count, np.asarray(arrayLeftKneeAnglesVelocityThigh[0])[_batch_slice],
+                    np.asarray(arrayLeftKneeAnglesVelocityThigh[1])[_batch_slice],
+                    np.asarray(arrayLeftKneeAnglesVelocityThigh[2])[_batch_slice])
+                )
+                LeftShankAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(LeftShankAnglesVelocityLab, LeftEShankProximalAnat)
+                LeftShankAnglesAcceleration_Shank = math.TransformVectorIntoMovingCoors(LeftShankAnglesAccelerationLab, LeftEShankProximalAnat)
+                LeftKneeAnglesVelocityLab = math.TransformVectorIntoLabCoors(LeftKneeAnglesVelocityThigh, LeftEThighAnat)
+                LeftKneeAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(LeftKneeAnglesVelocityLab, LeftEShankProximalAnat)
+            LeftKneeMoment_Shank[..., 0] = (
+                LeftShankMassMomentOfInertia[..., 0] * LeftShankAnglesAcceleration_Shank[..., 0] +
+                (LeftShankMassMomentOfInertia[..., 2] - LeftShankMassMomentOfInertia[..., 1]) *
+                LeftShankAnglesVelocity_Shank[..., 1] * LeftShankAnglesVelocity_Shank[..., 2] -
+                MomentFromProximalForce_Shank[..., 0] - MomentfromDistalForce_Shank[..., 0] -
+                LeftAnkleMoment_Shank[..., 0]
+            )
+            LeftKneeMoment_Shank[..., 1] = (
+                LeftShankMassMomentOfInertia[..., 1] * LeftShankAnglesAcceleration_Shank[..., 1] +
+                (LeftShankMassMomentOfInertia[..., 0] - LeftShankMassMomentOfInertia[..., 2]) *
+                LeftShankAnglesVelocity_Shank[..., 2] * LeftShankAnglesVelocity_Shank[..., 0] -
+                MomentFromProximalForce_Shank[..., 1] - MomentfromDistalForce_Shank[..., 1] -
+                LeftAnkleMoment_Shank[..., 1]
+            )
+            LeftKneeMoment_Shank[..., 2] = (
+                LeftShankMassMomentOfInertia[..., 2] * LeftShankAnglesAcceleration_Shank[..., 2] +
+                (LeftShankMassMomentOfInertia[..., 1] - LeftShankMassMomentOfInertia[..., 0]) *
+                LeftShankAnglesVelocity_Shank[..., 0] * LeftShankAnglesVelocity_Shank[..., 1] -
+                MomentFromProximalForce_Shank[..., 2] - MomentfromDistalForce_Shank[..., 2] -
+                LeftAnkleMoment_Shank[..., 2]
+            )
+            if self.ShankCoordinateSystem == 'Distal':
+                LeftKneeMomentLab = math.TransformVectorIntoLabCoors(LeftKneeMoment_Shank, LeftEShankDistalAnat)
+            if self.ShankCoordinateSystem == 'Proximal':
+                LeftKneeMomentLab = math.TransformVectorIntoLabCoors(LeftKneeMoment_Shank, LeftEShankProximalAnat)
+            LeftKneePower[..., 0] = LeftKneeMoment_Shank[..., 0] * LeftKneeAnglesVelocity_Shank[..., 0]
+            LeftKneePower[..., 1] = LeftKneeMoment_Shank[..., 1] * LeftKneeAnglesVelocity_Shank[..., 1]
+            LeftKneePower[..., 2] = LeftKneeMoment_Shank[..., 2] * LeftKneeAnglesVelocity_Shank[..., 2]
+            LeftKneePowerTotal = np.sum(LeftKneeMoment_Shank * LeftKneeAnglesVelocity_Shank, axis=-1)
+            arrayLeftKneeMoment[0][_batch_slice] = np.broadcast_to(-Sign * LeftKneeMoment_Shank[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftKneeMoment[1][_batch_slice] = np.broadcast_to(-LeftKneeMoment_Shank[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftKneeMoment[2][_batch_slice] = np.broadcast_to(-Sign * LeftKneeMoment_Shank[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftKneePower[0][_batch_slice] = np.broadcast_to(LeftKneePower[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftKneePower[1][_batch_slice] = np.broadcast_to(LeftKneePower[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftKneePower[2][_batch_slice] = np.broadcast_to(LeftKneePower[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftKneePowerTotal[0][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayLeftKneePowerTotal[1][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayLeftKneePowerTotal[2][_batch_slice] = np.broadcast_to(LeftKneePowerTotal / float(self.valueBodyMass), (_batch_count,))
+            LeftKneeForceTib = math.TransformVectorIntoMovingCoors(LeftKneeForceLab, LeftEShankProximalAnat)
+            arrayLeftKneeJRF[0][_batch_slice] = np.broadcast_to(LeftKneeForceTib[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftKneeJRF[1][_batch_slice] = np.broadcast_to(Sign * LeftKneeForceTib[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftKneeJRF[2][_batch_slice] = np.broadcast_to(LeftKneeForceTib[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            LeftKneeForceLab = -LeftKneeForceLab
+            LeftKneeMomentLab = -LeftKneeMomentLab
+            # Hip stage depends on the completed knee forces and moments.
+            LeftHipForceLab[..., 0] = (
+                ThighMass * Direction * np.asarray(arrayLeftThighLinearAccelerationLab[0])[_batch_slice] / 1000.0 -
+                LeftKneeForceLab[..., 0]
+            )
+            LeftHipForceLab[..., 1] = (
+                ThighMass * Direction * np.asarray(arrayLeftThighLinearAccelerationLab[1])[_batch_slice] / 1000.0 -
+                LeftKneeForceLab[..., 1]
+            )
+            LeftHipForceLab[..., 2] = (
+                ThighMass * np.asarray(arrayLeftThighLinearAccelerationLab[2])[_batch_slice] / 1000.0 -
+                LeftKneeForceLab[..., 2] + FootMass * 9.81
+            )
+            ProximalVector = LeftHipCenterLab - LeftThighCenterOfMass
+            DistalVector = LeftKneeCenterLab - LeftThighCenterOfMass
+            MomentFromProximalForce = np.cross(ProximalVector, LeftHipForceLab) / 1000.0
+            MomentFromDistalForce = np.cross(DistalVector, LeftKneeForceLab) / 1000.0
+            MomentFromProximalForce_Thigh = math.TransformVectorIntoMovingCoors(MomentFromProximalForce, LeftEThighAnat)
+            MomentfromDistalForce_Thigh = math.TransformVectorIntoMovingCoors(MomentFromDistalForce, LeftEThighAnat)
+            LeftKneeMoment_Thigh = math.TransformVectorIntoMovingCoors(LeftKneeMomentLab, LeftEThighAnat)
+            LeftThighAnglesVelocityLab = (
+                math.FrameVector(_batch_count, np.asarray(arrayLeftThighAnglesVelocityLab[0])[_batch_slice],
+                np.asarray(arrayLeftThighAnglesVelocityLab[1])[_batch_slice],
+                np.asarray(arrayLeftThighAnglesVelocityLab[2])[_batch_slice])
+            )
+            LeftThighAnglesAccelerationLab = (
+                math.FrameVector(_batch_count, np.asarray(arrayLeftThighAnglesAccelerationLab[0])[_batch_slice],
+                np.asarray(arrayLeftThighAnglesAccelerationLab[1])[_batch_slice],
+                np.asarray(arrayLeftThighAnglesAccelerationLab[2])[_batch_slice])
+            )
+            LeftHipAnglesVelocityPelvis = (
+                math.FrameVector(_batch_count, np.asarray(arrayLeftHipAnglesVelocityPelvis[0])[_batch_slice],
+                np.asarray(arrayLeftHipAnglesVelocityPelvis[1])[_batch_slice],
+                np.asarray(arrayLeftHipAnglesVelocityPelvis[2])[_batch_slice])
+            )
+            LeftThighAnglesVelocity_Thigh = math.TransformVectorIntoMovingCoors(LeftThighAnglesVelocityLab, LeftEThighAnat)
+            LeftThighAnglesAcceleration_Thigh = math.TransformVectorIntoMovingCoors(LeftThighAnglesAccelerationLab, LeftEThighAnat)
+            LeftHipAnglesVelocityLab = math.TransformVectorIntoLabCoors(LeftHipAnglesVelocityPelvis, EPelvisAnat)
+            LeftHipAnglesVelocity_Thigh = math.TransformVectorIntoMovingCoors(LeftHipAnglesVelocityLab, LeftEThighAnat)
+            LeftHipMoment_Thigh[..., 0] = (
+                LeftThighMassMomentOfInertia[..., 0] * LeftThighAnglesAcceleration_Thigh[..., 0] +
+                (LeftThighMassMomentOfInertia[..., 2] - LeftThighMassMomentOfInertia[..., 1]) *
+                LeftThighAnglesVelocity_Thigh[..., 1] * LeftThighAnglesVelocity_Thigh[..., 2] -
+                MomentFromProximalForce_Thigh[..., 0] - MomentfromDistalForce_Thigh[..., 0] -
+                LeftKneeMoment_Thigh[..., 0]
+            )
+            LeftHipMoment_Thigh[..., 1] = (
+                LeftThighMassMomentOfInertia[..., 1] * LeftThighAnglesAcceleration_Thigh[..., 1] +
+                (LeftThighMassMomentOfInertia[..., 0] - LeftThighMassMomentOfInertia[..., 2]) *
+                LeftThighAnglesVelocity_Thigh[..., 2] * LeftThighAnglesVelocity_Thigh[..., 0] -
+                MomentFromProximalForce_Thigh[..., 1] - MomentfromDistalForce_Thigh[..., 1] -
+                LeftKneeMoment_Thigh[..., 1]
+            )
+            LeftHipMoment_Thigh[..., 2] = (
+                LeftThighMassMomentOfInertia[..., 2] * LeftThighAnglesAcceleration_Thigh[..., 2] +
+                (LeftThighMassMomentOfInertia[..., 1] - LeftThighMassMomentOfInertia[..., 0]) *
+                LeftThighAnglesVelocity_Thigh[..., 0] * LeftThighAnglesVelocity_Thigh[..., 1] -
+                MomentFromProximalForce_Thigh[..., 2] - MomentfromDistalForce_Thigh[..., 2] -
+                LeftKneeMoment_Thigh[..., 2]
+            )
+            LeftHipMomentLab = math.TransformVectorIntoLabCoors(LeftHipMoment_Thigh, LeftEThighAnat)
+            LeftHipPower[..., 0] = LeftHipMoment_Thigh[..., 0] * LeftHipAnglesVelocity_Thigh[..., 0]
+            LeftHipPower[..., 1] = LeftHipMoment_Thigh[..., 1] * LeftHipAnglesVelocity_Thigh[..., 1]
+            LeftHipPower[..., 2] = LeftHipMoment_Thigh[..., 2] * LeftHipAnglesVelocity_Thigh[..., 2]
+            LeftHipPowerTotal = np.sum(LeftHipMoment_Thigh * LeftHipAnglesVelocity_Thigh, axis=-1)
+            arrayLeftHipMoment[0][_batch_slice] = np.broadcast_to(-Sign * LeftHipMoment_Thigh[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftHipMoment[1][_batch_slice] = np.broadcast_to(LeftHipMoment_Thigh[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftHipMoment[2][_batch_slice] = np.broadcast_to(-Sign * LeftHipMoment_Thigh[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftHipPower[0][_batch_slice] = np.broadcast_to(LeftHipPower[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftHipPower[1][_batch_slice] = np.broadcast_to(LeftHipPower[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftHipPower[2][_batch_slice] = np.broadcast_to(LeftHipPower[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftHipPowerTotal[0][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayLeftHipPowerTotal[1][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayLeftHipPowerTotal[2][_batch_slice] = np.broadcast_to(LeftHipPowerTotal / float(self.valueBodyMass), (_batch_count,))
+            LeftHipForceThigh = math.TransformVectorIntoMovingCoors(LeftHipForceLab, LeftEThighAnat)
+            arrayLeftHipJRF[0][_batch_slice] = np.broadcast_to(LeftHipForceThigh[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftHipJRF[1][_batch_slice] = np.broadcast_to(Sign * LeftHipForceThigh[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftHipJRF[2][_batch_slice] = np.broadcast_to(LeftHipForceThigh[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            GRF = math.TransformVectorIntoMovingCoors(GRF, ELab)
+            arrayLeftGRF[0][_batch_slice] = np.broadcast_to(GRF[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftGRF[1][_batch_slice] = np.broadcast_to(Sign * GRF[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftGRF[2][_batch_slice] = np.broadcast_to(GRF[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayLeftGRM[0][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayCOPx)[FP_FrameNumber] -
+                np.asarray(arrayPelvisOrigin[0])[_batch_slice], (_batch_count,))
+            )
+            arrayLeftGRM[1][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayCOPy)[FP_FrameNumber] -
+                np.asarray(arrayPelvisOrigin[1])[_batch_slice], (_batch_count,))
+            )
+            arrayLeftGRM[2][_batch_slice] = np.broadcast_to(Sign * GRT[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            COP_Pelvis = (
+                math.FrameVector(_batch_count, np.asarray(arrayLeftGRM[0])[_batch_slice],
+                np.asarray(arrayLeftGRM[1])[_batch_slice], np.asarray(arrayLeftGRM[2])[_batch_slice])
+            )
+            COP_Pelvis = math.TransformVectorIntoMovingCoors(COP_Pelvis, ELab)
+            arrayLeftGRM[0][_batch_slice] = np.broadcast_to(100 * Direction * COP_Pelvis[..., 0] / self.valueLeftLegLength, (_batch_count,))
+            arrayLeftGRM[1][_batch_slice] = (
+                np.broadcast_to(100 * Direction * Sign * COP_Pelvis[..., 1] / self.valueLeftLegLength,
+                (_batch_count,))
+            )
+            arrayLeftMPSum[0][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayLeftHipMoment[0])[_batch_slice] +
+                np.asarray(arrayLeftKneeMoment[0])[_batch_slice] +
+                np.asarray(arrayLeftAnkleMoment[0])[_batch_slice], (_batch_count,))
+            )
+            arrayLeftMPSum[1][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayLeftHipPower[0])[_batch_slice] +
+                np.asarray(arrayLeftKneePower[0])[_batch_slice] + np.asarray(arrayLeftAnklePower[0])[_batch_slice],
+                (_batch_count,))
+            )
+            arrayLeftMPSum[2][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayLeftHipPowerTotal[2])[_batch_slice] +
+                np.asarray(arrayLeftKneePowerTotal[2])[_batch_slice] +
+                np.asarray(arrayLeftAnklePowerTotal[2])[_batch_slice], (_batch_count,))
+            )
+            AnkleCOP = COP - LeftAnkleCenterLab
+            AnkleCOP[..., 2] = 0
+            AnkleCOP_Foot = math.TransformVectorIntoMovingCoors(AnkleCOP, LeftEFootAnat)
+            FL = np.linalg.norm(LeftToeMarker - LeftAnkleCenterLab, axis=-1)
+            AnkleCOP_Foot_Normalized = 100 * AnkleCOP_Foot / FL[..., None]
+            arrayLeftFootCoP[0][_batch_slice] = np.broadcast_to(AnkleCOP_Foot_Normalized[..., 0], (_batch_count,))
+            arrayLeftFootCoP[1][_batch_slice] = np.broadcast_to(AnkleCOP_Foot_Normalized[..., 1], (_batch_count,))
+            arrayLeftFootCoP[2][_batch_slice] = np.broadcast_to(0, (_batch_count,))
 
         if not RightForcePlate_DeviceID == "0":
             # ==================== Smooth Data before Differentiating ======================
@@ -6757,926 +4732,467 @@ class Dynamic_Main:
             RightAnklePower = np.array([0.0, 0.0, 0.0])
             RightKneePower = np.array([0.0, 0.0, 0.0])
             RightHipPower = np.array([0.0, 0.0, 0.0])
-            for FrameNumber in range(StartFrame, EndFrame):
-                SacralMarker = np.array([Direction * SacralMarkerX[FrameNumber], Direction * SacralMarkerY[FrameNumber], SacralMarkerZ[FrameNumber]])
-                LeftASISMarker = np.array([Direction * LeftASISMarkerX[FrameNumber], Direction * LeftASISMarkerY[FrameNumber], LeftASISMarkerZ[FrameNumber]])
-                RightASISMarker = np.array([Direction * RightASISMarkerX[FrameNumber], Direction * RightASISMarkerY[FrameNumber], RightASISMarkerZ[FrameNumber]])
-                Sign = 1  # Right Side
-
-                # Transform marker data if necessary based on direction that the patient is walking
-                RightThighMarker = np.array(
-                    [
-                        Direction * RightThighMarkerX[FrameNumber],
-                        Direction * RightThighMarkerY[FrameNumber],
-                        RightThighMarkerZ[FrameNumber],
-                    ]
-                )
-                RightLateralKneeMarker = np.array(
-                    [
-                        Direction * RightLateralKneeMarkerX[FrameNumber],
-                        Direction * RightLateralKneeMarkerY[FrameNumber],
-                        RightLateralKneeMarkerZ[FrameNumber],
-                    ]
-                )
-                RightTibialMarker = np.array(
-                    [
-                        Direction * RightTibialMarkerX[FrameNumber],
-                        Direction * RightTibialMarkerY[FrameNumber],
-                        RightTibialMarkerZ[FrameNumber],
-                    ]
-                )
-                RightLateralAnkleMarker = np.array(
-                    [
-                        Direction * RightLateralAnkleMarkerX[FrameNumber],
-                        Direction * RightLateralAnkleMarkerY[FrameNumber],
-                        RightLateralAnkleMarkerZ[FrameNumber],
-                    ]
-                )
-                RightToeMarker = np.array(
-                    [
-                        Direction * RightToeMarkerX[FrameNumber],
-                        Direction * RightToeMarkerY[FrameNumber],
-                        RightToeMarkerZ[FrameNumber],
-                    ]
-                )
-                RightMedialAnkleMarker = np.array(
-                    [
-                        Direction * RightMedialAnkleMarkerX[FrameNumber],
-                        Direction * RightMedialAnkleMarkerY[FrameNumber],
-                        RightMedialAnkleMarkerZ[FrameNumber],
-                    ]
-                )
-                RightHeelMarker = np.array(
-                    [
-                        Direction * RightHeelMarkerX[FrameNumber],
-                        Direction * RightHeelMarkerY[FrameNumber],
-                        RightHeelMarkerZ[FrameNumber],
-                    ]
-                )
-                if RightTibialTriadCheck is True:
-                    RightTibialUpperMarker = np.array(
-                        [
-                            Direction * RightTibialUpperMarkerX[FrameNumber],
-                            Direction * RightTibialUpperMarkerY[FrameNumber],
-                            RightTibialUpperMarkerZ[FrameNumber],
-                        ]
-                    )
-                    RightTibialLowerMarker = np.array(
-                        [
-                            Direction * RightTibialLowerMarkerX[FrameNumber],
-                            Direction * RightTibialLowerMarkerY[FrameNumber],
-                            RightTibialLowerMarkerZ[FrameNumber],
-                        ]
-                    )
-                # Transform joint center data if necessary based on direction that the patient is walking
-                RightHipCenterLab = np.array(
-                    [
-                        Direction * arrayRightHipCenter[0][FrameNumber],
-                        Direction * arrayRightHipCenter[1][FrameNumber],
-                        arrayRightHipCenter[2][FrameNumber],
-                    ]
-                )
-                RightKneeCenterLab = np.array(
-                    [
-                        Direction * arrayRightKneeCenter[0][FrameNumber],
-                        Direction * arrayRightKneeCenter[1][FrameNumber],
-                        arrayRightKneeCenter[2][FrameNumber],
-                    ]
-                )
-                RightAnkleCenterLab = np.array(
-                    [
-                        Direction * arrayRightAnkleCenter[0][FrameNumber],
-                        Direction * arrayRightAnkleCenter[1][FrameNumber],
-                        arrayRightAnkleCenter[2][FrameNumber],
-                    ]
-                )
-                # Transform center of mass data if necessary based on direction that the patient is walking
-                RightThighCenterOfMass = np.array(
-                    [
-                        Direction * arrayRightThighCenterOfMass[0][FrameNumber],
-                        Direction * arrayRightThighCenterOfMass[1][FrameNumber],
-                        arrayRightThighCenterOfMass[2][FrameNumber],
-                    ]
-                )
-                RightShankCenterOfMass = np.array(
-                    [
-                        Direction * arrayRightShankCenterOfMass[0][FrameNumber],
-                        Direction * arrayRightShankCenterOfMass[1][FrameNumber],
-                        arrayRightShankCenterOfMass[2][FrameNumber],
-                    ]
-                )
-                RightFootCenterOfMass = np.array(
-                    [
-                        Direction * arrayRightFootCenterOfMass[0][FrameNumber],
-                        Direction * arrayRightFootCenterOfMass[1][FrameNumber],
-                        arrayRightFootCenterOfMass[2][FrameNumber],
-                    ]
-                )
-
-                # Compute centroidal radii of gyration (Convert from mm to meters)
-                RightThighRadiusOfGyration = (
-                    math.RadiusOfGyration(
-                        RightHipCenterLab, RightKneeCenterLab, 0.323, 0.323, 0.187
-                    )
-                    / 1e3
-                )
-                RightShankRadiusOfGyration = (
-                    math.RadiusOfGyration(
-                        RightKneeCenterLab, RightAnkleCenterLab, 0.302, 0.302, 0.087
-                    )
-                    / 1e3
-                )
-                RightFootRadiusOfGyration = (
-                    math.RadiusOfGyration(
-                        RightAnkleCenterLab, RightToeMarker, 0.148, 0.475, 0.475
-                    )
-                    / 1e3
-                )
-
-                # Compute segmental mass moment of inertia
-                RightThighMassMomentOfInertia = ThighMass * np.square(
-                    RightThighRadiusOfGyration
-                )
-                RightShankMassMomentOfInertia = ShankMass * np.square(
-                    RightShankRadiusOfGyration
-                )
-                RightFootMassMomentOfInertia = FootMass * np.square(
-                    RightFootRadiusOfGyration
-                )
-
-                FP_FrameNumber = int(FrameNumber * FP_FrameRate / MarkerFrameRate)
-                # Marker/force-plate frame counts don't always line up exactly at the
-                # end of the trial (rounding, or one fewer FP sample than markers);
-                # clamp to the last available FP sample rather than indexing past it.
-                FP_FrameNumber = min(FP_FrameNumber, FP_MaxIndex)
-
-                # Compute Vertical Torque (Mz is dependent on COP location)
-                Tz = (
-                    arrayMz[FP_FrameNumber]
-                    + arrayFx[FP_FrameNumber]
-                    * (arrayCOPy[FP_FrameNumber] - FP_Center[1] + FP_Origin[1])
-                    - arrayFy[FP_FrameNumber]
-                    * (arrayCOPx[FP_FrameNumber] - FP_Center[0] + FP_Origin[0])
-                )
-
-                # Account for Walking Direction
-                # Compute Reaction force as opposite of force plate output
-                GRF[0] = -Direction * arrayFx[FP_FrameNumber]
-                GRF[1] = -Direction * arrayFy[FP_FrameNumber]
-                GRF[2] = -arrayFz[FP_FrameNumber]
-                GRT[2] = -Tz / 1e3  # Convert from mm to meters
-
-                # Center of Pressure is already in lab/global coordinate system
-                COP[0] = Direction * arrayCOPx[FP_FrameNumber]
-                COP[1] = Direction * arrayCOPy[FP_FrameNumber]
-                COP[2] = 0
-
-                ############ Compute Anatomilcal Coordinate Systems ###################
-                [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(
-                    LeftASISMarker, RightASISMarker, SacralMarker
-                )
-                EPelvisAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueEPelvisAnatRelTech, EPelvisTech
-                )
-                RightEThighTech = gait.TechCS_Thigh_Newington(
-                    "Right", RightHipCenterLab, RightThighMarker, RightLateralKneeMarker
-                )
-                RightEThighAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueRightEThighAnatRelTech, RightEThighTech
-                )
-                if RightTibialTriadCheck is True:
-                    RightEShankTech = gait.TechCS_Shank_Newington(
-                        "Right",
-                        RightTibialUpperMarker,
-                        RightTibialLowerMarker,
-                        RightTibialMarker,
-                    )
-                else:
-                    RightEShankTech = gait.TechCS_Shank_Newington(
-                        "Right",
-                        RightKneeCenterLab,
-                        RightTibialMarker,
-                        RightLateralAnkleMarker,
-                    )
-                RightEShankProximalAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueRightEShankProximalAnatRelTech, RightEShankTech
-                )
-                RightEShankDistalAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueRightEShankDistalAnatRelTech, RightEShankTech
-                )
-                # If Medial ankle is available,then recompute Shank Proximal/Distal Anatomical Coordinate System
-                if RightMedialAnkleMarkerDropOff == 0:
-                    RightEShankProximalAnat = gait.AnatCS_Shank_Proximal_Newington(
-                        "Right",
-                        RightKneeCenterLab,
-                        RightLateralKneeMarker,
-                        RightAnkleCenterLab,
-                    )
-                    RightEShankDistalAnat = gait.AnatCS_Shank_Distal_VCM(
-                        "Right",
-                        RightKneeCenterLab,
-                        RightAnkleCenterLab,
-                        RightLateralAnkleMarker,
-                    )
-                RightEFootTech = gait.TechCS_Foot_Newington(
-                    "Right", RightKneeCenterLab, RightAnkleCenterLab, RightToeMarker
-                )
-                RightEFootAnat = math.TransformAnatCoorSysFromTechCoors(
-                    self.valueRightEFootAnatRelTech, RightEFootTech
-                )
-                try:
-                    RightEFootTibAnat = math.TransformAnatCoorSysFromTechCoors(
-                        self.valueRightEFootAnat2RelTech, RightEFootTech
-                    )
-                except:
-                    RightEFootTibAnat = np.matrix(
-                        [[0.0 for m in range(3)] for n in range(3)]
-                    )
-                #######################################################################################################
-
-                # ============================== Ankle ====================================
-                # All Distances are in mm. Account for conversion to meters
-                RightAnkleForceLab[0] = (
-                    FootMass
-                    * Direction
-                    * arrayRightFootLinearAccelerationLab[0][FrameNumber]
-                    / 1e3
-                    - GRF[0]
-                )
-                RightAnkleForceLab[1] = (
-                    FootMass
-                    * Direction
-                    * arrayRightFootLinearAccelerationLab[1][FrameNumber]
-                    / 1e3
-                    - GRF[1]
-                )
-                RightAnkleForceLab[2] = (
-                    FootMass * arrayRightFootLinearAccelerationLab[2][FrameNumber] / 1e3
-                    - GRF[2]
-                    + FootMass * 9.81
-                )
-
-                # vector from center of mass to proximal point of load application
-                ProximalVector = RightAnkleCenterLab - RightFootCenterOfMass
-                # vector from center of mass to distal point of load application
-                DistalVector = COP - RightFootCenterOfMass
-
-                MomentFromProximalForce = (
-                    np.cross(ProximalVector, RightAnkleForceLab) / 1e3
-                )  # Convert from mm to meters
-                MomentFromDistalForce = (
-                    np.cross(DistalVector, GRF) / 1e3
-                )  # Convert from mm to meters
-
-                # Tranform to Foot Coordinate System
-                MomentFromProximalForce_Foot = math.TransformVectorIntoMovingCoors(
-                    MomentFromProximalForce, RightEFootAnat
-                )
-                MomentfromDistalForce_Foot = math.TransformVectorIntoMovingCoors(
-                    MomentFromDistalForce, RightEFootAnat
-                )
-                GRT_Foot = math.TransformVectorIntoMovingCoors(GRT, RightEFootAnat)
-                RightFootAnglesVelocityLab = np.array(
-                    [
-                        arrayRightFootAnglesVelocityLab[0][FrameNumber],
-                        arrayRightFootAnglesVelocityLab[1][FrameNumber],
-                        arrayRightFootAnglesVelocityLab[2][FrameNumber],
-                    ]
-                )
-                RightFootAnglesAccelerationLab = np.array(
-                    [
-                        arrayRightFootAnglesAccelerationLab[0][FrameNumber],
-                        arrayRightFootAnglesAccelerationLab[1][FrameNumber],
-                        arrayRightFootAnglesAccelerationLab[2][FrameNumber],
-                    ]
-                )
-                RightAnkleAnglesVelocityShank = np.array(
-                    [
-                        arrayRightAnkleAnglesVelocityShank[0][FrameNumber],
-                        arrayRightAnkleAnglesVelocityShank[1][FrameNumber],
-                        arrayRightAnkleAnglesVelocityShank[2][FrameNumber],
-                    ]
-                )
-                RightFootAnglesVelocity_Foot = math.TransformVectorIntoMovingCoors(
-                    RightFootAnglesVelocityLab, RightEFootAnat
-                )
-                RightFootAnglesAcceleration_Foot = math.TransformVectorIntoMovingCoors(
-                    RightFootAnglesAccelerationLab, RightEFootAnat
-                )
-                # Joint velocity is in proximal segment CS. Transform to Distal
-                if self.ShankCoordinateSystem == "Distal":
-                    RightAnkleAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                        RightAnkleAnglesVelocityShank, RightEShankDistalAnat
-                    )
-                if self.ShankCoordinateSystem == "Proximal":
-                    RightAnkleAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                        RightAnkleAnglesVelocityShank, RightEShankProximalAnat
-                    )
-                RightAnkleAnglesVelocity_Foot = math.TransformVectorIntoMovingCoors(
-                    RightAnkleAnglesVelocityLab, RightEFootAnat
-                )
-
-                RightAnkleMoment_Foot[0] = (
-                    RightFootMassMomentOfInertia[0]
-                    * RightFootAnglesAcceleration_Foot[0]
-                    + (
-                        RightFootMassMomentOfInertia[2]
-                        - RightFootMassMomentOfInertia[1]
-                    )
-                    * RightFootAnglesVelocity_Foot[1]
-                    * RightFootAnglesVelocity_Foot[2]
-                    - MomentFromProximalForce_Foot[0]
-                    - MomentfromDistalForce_Foot[0]
-                    - GRT_Foot[0]
-                )
-                RightAnkleMoment_Foot[1] = (
-                    RightFootMassMomentOfInertia[1]
-                    * RightFootAnglesAcceleration_Foot[1]
-                    + (
-                        RightFootMassMomentOfInertia[0]
-                        - RightFootMassMomentOfInertia[2]
-                    )
-                    * RightFootAnglesVelocity_Foot[2]
-                    * RightFootAnglesVelocity_Foot[0]
-                    - MomentFromProximalForce_Foot[1]
-                    - MomentfromDistalForce_Foot[1]
-                    - GRT_Foot[1]
-                )
-                RightAnkleMoment_Foot[2] = (
-                    RightFootMassMomentOfInertia[2]
-                    * RightFootAnglesAcceleration_Foot[2]
-                    + (
-                        RightFootMassMomentOfInertia[1]
-                        - RightFootMassMomentOfInertia[0]
-                    )
-                    * RightFootAnglesVelocity_Foot[0]
-                    * RightFootAnglesVelocity_Foot[1]
-                    - MomentFromProximalForce_Foot[2]
-                    - MomentfromDistalForce_Foot[2]
-                    - GRT_Foot[2]
-                )
-
-                # Transform Ankle Moment to Lab coordinate system
-                RightAnkleMomentLab = math.TransformVectorIntoLabCoors(
-                    RightAnkleMoment_Foot, RightEFootAnat
-                )
-
-                RightAnklePower[0] = (
-                    RightAnkleMoment_Foot[0] * RightAnkleAnglesVelocity_Foot[0]
-                )
-                RightAnklePower[1] = (
-                    RightAnkleMoment_Foot[1] * RightAnkleAnglesVelocity_Foot[1]
-                )
-                RightAnklePower[2] = (
-                    RightAnkleMoment_Foot[2] * RightAnkleAnglesVelocity_Foot[2]
-                )
-
-                RightAnklePowerTotal = np.dot(
-                    RightAnkleMoment_Foot, RightAnkleAnglesVelocity_Foot
-                )
-
-                # Normalize and Store in array
-                # Apply sign convention based on right versus Right side & plotting convention
-                # Internal Moments that are Extensor, Abductor, External Rotator are positive
-                arrayRightAnkleMoment[0][FrameNumber] = (
-                    -Sign * RightAnkleMoment_Foot[0] / float(self.valueBodyMass)
-                )
-                arrayRightAnkleMoment[1][FrameNumber] = RightAnkleMoment_Foot[
-                    1
-                ] / float(self.valueBodyMass)
-                arrayRightAnkleMoment[2][FrameNumber] = (
-                    -Sign * RightAnkleMoment_Foot[2] / float(self.valueBodyMass)
-                )
-
-                arrayRightAnklePower[0][FrameNumber] = RightAnklePower[0] / float(
-                    self.valueBodyMass
-                )
-                arrayRightAnklePower[1][FrameNumber] = RightAnklePower[1] / float(
-                    self.valueBodyMass
-                )
-                arrayRightAnklePower[2][FrameNumber] = RightAnklePower[2] / float(
-                    self.valueBodyMass
-                )
-
-                arrayRightAnklePowerTotal[0][FrameNumber] = 0
-                arrayRightAnklePowerTotal[1][FrameNumber] = 0
-                arrayRightAnklePowerTotal[2][FrameNumber] = (
-                    RightAnklePowerTotal / float(self.valueBodyMass)
-                )
-
-                # Transform Ankle Force into Foot CS
-                RightAnkleForceFoot = math.TransformVectorIntoMovingCoors(
-                    RightAnkleForceLab, RightEFootTibAnat
-                )
-                arrayRightAnkleJRF[0][FrameNumber] = RightAnkleForceFoot[0] / float(
-                    self.valueBodyMass
-                )
-                arrayRightAnkleJRF[1][FrameNumber] = (
-                    Sign * RightAnkleForceFoot[1] / float(self.valueBodyMass)
-                )
-                arrayRightAnkleJRF[2][FrameNumber] = RightAnkleForceFoot[2] / float(
-                    self.valueBodyMass
-                )
-
-                # ============================== Knee ====================================
-                # Reverse sign of force and moment from Distal Segment
-                RightAnkleForceLab = -RightAnkleForceLab
-                RightAnkleMomentLab = -RightAnkleMomentLab
-
-                # All Distances are in mm. Account for conversion to meters
-                RightKneeForceLab[0] = (
-                    ShankMass
-                    * Direction
-                    * arrayRightShankLinearAccelerationLab[0][FrameNumber]
-                    / 1e3
-                    - RightAnkleForceLab[0]
-                )
-                RightKneeForceLab[1] = (
-                    ShankMass
-                    * Direction
-                    * arrayRightShankLinearAccelerationLab[1][FrameNumber]
-                    / 1e3
-                    - RightAnkleForceLab[1]
-                )
-                RightKneeForceLab[2] = (
-                    ShankMass
-                    * arrayRightShankLinearAccelerationLab[2][FrameNumber]
-                    / 1e3
-                    - RightAnkleForceLab[2]
-                    + FootMass * 9.81
-                )
-
-                # vector from center of mass to proximal point of load application
-                ProximalVector = RightKneeCenterLab - RightShankCenterOfMass
-                # vector from center of mass to distal point of load application
-                DistalVector = RightAnkleCenterLab - RightShankCenterOfMass
-
-                MomentFromProximalForce = (
-                    np.cross(ProximalVector, RightKneeForceLab) / 1e3
-                )  # Convert from mm to meters
-                MomentFromDistalForce = (
-                    np.cross(DistalVector, RightAnkleForceLab) / 1e3
-                )  # Convert from mm to meters
-
-                # Tranform to Shank Coordinate System
-                if self.ShankCoordinateSystem == "Distal":
-                    MomentFromProximalForce_Shank = math.TransformVectorIntoMovingCoors(
-                        MomentFromProximalForce, RightEShankDistalAnat
-                    )
-                    MomentfromDistalForce_Shank = math.TransformVectorIntoMovingCoors(
-                        MomentFromDistalForce, RightEShankDistalAnat
-                    )
-                    RightAnkleMoment_Shank = math.TransformVectorIntoMovingCoors(
-                        RightAnkleMomentLab, RightEShankDistalAnat
-                    )
-                    RightShankAnglesVelocityLab = np.array(
-                        [
-                            arrayRightShankAnglesVelocityLab[0][FrameNumber],
-                            arrayRightShankAnglesVelocityLab[1][FrameNumber],
-                            arrayRightShankAnglesVelocityLab[2][FrameNumber],
-                        ]
-                    )
-                    RightShankAnglesAccelerationLab = np.array(
-                        [
-                            arrayRightShankAnglesAccelerationLab[0][FrameNumber],
-                            arrayRightShankAnglesAccelerationLab[1][FrameNumber],
-                            arrayRightShankAnglesAccelerationLab[2][FrameNumber],
-                        ]
-                    )
-                    RightKneeAnglesVelocityThigh = np.array(
-                        [
-                            arrayRightKneeAnglesVelocityThigh[0][FrameNumber],
-                            arrayRightKneeAnglesVelocityThigh[1][FrameNumber],
-                            arrayRightKneeAnglesVelocityThigh[2][FrameNumber],
-                        ]
-                    )
-                    RightShankAnglesVelocity_Shank = (
-                        math.TransformVectorIntoMovingCoors(
-                            RightShankAnglesVelocityLab, RightEShankDistalAnat
-                        )
-                    )
-                    RightShankAnglesAcceleration_Shank = (
-                        math.TransformVectorIntoMovingCoors(
-                            RightShankAnglesAccelerationLab, RightEShankDistalAnat
-                        )
-                    )
-                    # Joint velocity is in proximal segment CS. Transform to Distal
-                    RightKneeAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                        RightKneeAnglesVelocityThigh, RightEThighAnat
-                    )
-                    RightKneeAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(
-                        RightKneeAnglesVelocityLab, RightEShankDistalAnat
-                    )
-                if self.ShankCoordinateSystem == "Proximal":
-                    MomentFromProximalForce_Shank = math.TransformVectorIntoMovingCoors(
-                        MomentFromProximalForce, RightEShankProximalAnat
-                    )
-                    MomentfromDistalForce_Shank = math.TransformVectorIntoMovingCoors(
-                        MomentFromDistalForce, RightEShankProximalAnat
-                    )
-                    RightAnkleMoment_Shank = math.TransformVectorIntoMovingCoors(
-                        RightAnkleMomentLab, RightEShankProximalAnat
-                    )
-                    RightShankAnglesVelocityLab = np.array(
-                        [
-                            arrayRightShankAnglesVelocityLab[0][FrameNumber],
-                            arrayRightShankAnglesVelocityLab[1][FrameNumber],
-                            arrayRightShankAnglesVelocityLab[2][FrameNumber],
-                        ]
-                    )
-                    RightShankAnglesAccelerationLab = np.array(
-                        [
-                            arrayRightShankAnglesAccelerationLab[0][FrameNumber],
-                            arrayRightShankAnglesAccelerationLab[1][FrameNumber],
-                            arrayRightShankAnglesAccelerationLab[2][FrameNumber],
-                        ]
-                    )
-                    RightKneeAnglesVelocityThigh = np.array(
-                        [
-                            arrayRightKneeAnglesVelocityThigh[0][FrameNumber],
-                            arrayRightKneeAnglesVelocityThigh[1][FrameNumber],
-                            arrayRightKneeAnglesVelocityThigh[2][FrameNumber],
-                        ]
-                    )
-                    RightShankAnglesVelocity_Shank = (
-                        math.TransformVectorIntoMovingCoors(
-                            RightShankAnglesVelocityLab, RightEShankProximalAnat
-                        )
-                    )
-                    RightShankAnglesAcceleration_Shank = (
-                        math.TransformVectorIntoMovingCoors(
-                            RightShankAnglesAccelerationLab, RightEShankProximalAnat
-                        )
-                    )
-                    # Joint velocity is in proximal segment CS. Transform to Distal
-                    RightKneeAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                        RightKneeAnglesVelocityThigh, RightEThighAnat
-                    )
-                    RightKneeAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(
-                        RightKneeAnglesVelocityLab, RightEShankProximalAnat
-                    )
-
-                RightKneeMoment_Shank[0] = (
-                    RightShankMassMomentOfInertia[0]
-                    * RightShankAnglesAcceleration_Shank[0]
-                    + (
-                        RightShankMassMomentOfInertia[2]
-                        - RightShankMassMomentOfInertia[1]
-                    )
-                    * RightShankAnglesVelocity_Shank[1]
-                    * RightShankAnglesVelocity_Shank[2]
-                    - MomentFromProximalForce_Shank[0]
-                    - MomentfromDistalForce_Shank[0]
-                    - RightAnkleMoment_Shank[0]
-                )
-                RightKneeMoment_Shank[1] = (
-                    RightShankMassMomentOfInertia[1]
-                    * RightShankAnglesAcceleration_Shank[1]
-                    + (
-                        RightShankMassMomentOfInertia[0]
-                        - RightShankMassMomentOfInertia[2]
-                    )
-                    * RightShankAnglesVelocity_Shank[2]
-                    * RightShankAnglesVelocity_Shank[0]
-                    - MomentFromProximalForce_Shank[1]
-                    - MomentfromDistalForce_Shank[1]
-                    - RightAnkleMoment_Shank[1]
-                )
-                RightKneeMoment_Shank[2] = (
-                    RightShankMassMomentOfInertia[2]
-                    * RightShankAnglesAcceleration_Shank[2]
-                    + (
-                        RightShankMassMomentOfInertia[1]
-                        - RightShankMassMomentOfInertia[0]
-                    )
-                    * RightShankAnglesVelocity_Shank[0]
-                    * RightShankAnglesVelocity_Shank[1]
-                    - MomentFromProximalForce_Shank[2]
-                    - MomentfromDistalForce_Shank[2]
-                    - RightAnkleMoment_Shank[2]
-                )
-
-                # Transform Knee Moment to Lab coordinate system
-                if self.ShankCoordinateSystem == "Distal":
-                    RightKneeMomentLab = math.TransformVectorIntoLabCoors(
-                        RightKneeMoment_Shank, RightEShankDistalAnat
-                    )
-                if self.ShankCoordinateSystem == "Proximal":
-                    RightKneeMomentLab = math.TransformVectorIntoLabCoors(
-                        RightKneeMoment_Shank, RightEShankProximalAnat
-                    )
-
-                RightKneePower[0] = (
-                    RightKneeMoment_Shank[0] * RightKneeAnglesVelocity_Shank[0]
-                )
-                RightKneePower[1] = (
-                    RightKneeMoment_Shank[1] * RightKneeAnglesVelocity_Shank[1]
-                )
-                RightKneePower[2] = (
-                    RightKneeMoment_Shank[2] * RightKneeAnglesVelocity_Shank[2]
-                )
-
-                RightKneePowerTotal = np.dot(
-                    RightKneeMoment_Shank, RightKneeAnglesVelocity_Shank
-                )
-
-                # Normalize and Store in array
-                arrayRightKneeMoment[0][FrameNumber] = (
-                    -Sign * RightKneeMoment_Shank[0] / float(self.valueBodyMass)
-                )
-                arrayRightKneeMoment[1][FrameNumber] = -RightKneeMoment_Shank[
-                    1
-                ] / float(self.valueBodyMass)
-                arrayRightKneeMoment[2][FrameNumber] = (
-                    -Sign * RightKneeMoment_Shank[2] / float(self.valueBodyMass)
-                )
-
-                arrayRightKneePower[0][FrameNumber] = RightKneePower[0] / float(
-                    self.valueBodyMass
-                )
-                arrayRightKneePower[1][FrameNumber] = RightKneePower[1] / float(
-                    self.valueBodyMass
-                )
-                arrayRightKneePower[2][FrameNumber] = RightKneePower[2] / float(
-                    self.valueBodyMass
-                )
-
-                arrayRightKneePowerTotal[0][FrameNumber] = 0
-                arrayRightKneePowerTotal[1][FrameNumber] = 0
-                arrayRightKneePowerTotal[2][FrameNumber] = RightKneePowerTotal / float(
-                    self.valueBodyMass
-                )
-
-                # Transform Knee Force into Proximal Tibia CS
-                RightKneeForceTib = math.TransformVectorIntoMovingCoors(
-                    RightKneeForceLab, RightEShankProximalAnat
-                )
-                arrayRightKneeJRF[0][FrameNumber] = RightKneeForceTib[0] / float(
-                    self.valueBodyMass
-                )
-                arrayRightKneeJRF[1][FrameNumber] = (
-                    Sign * RightKneeForceTib[1] / float(self.valueBodyMass)
-                )
-                arrayRightKneeJRF[2][FrameNumber] = RightKneeForceTib[2] / float(
-                    self.valueBodyMass
-                )
-
-                # ============================== Hip ====================================
-                # Reverse sign of force and moment from Distal Segment
-                RightKneeForceLab = -RightKneeForceLab
-                RightKneeMomentLab = -RightKneeMomentLab
-
-                # All Distances are in mm. Account for conversion to meters
-                RightHipForceLab[0] = (
-                    ThighMass
-                    * Direction
-                    * arrayRightThighLinearAccelerationLab[0][FrameNumber]
-                    / 1e3
-                    - RightKneeForceLab[0]
-                )
-                RightHipForceLab[1] = (
-                    ThighMass
-                    * Direction
-                    * arrayRightThighLinearAccelerationLab[1][FrameNumber]
-                    / 1e3
-                    - RightKneeForceLab[1]
-                )
-                RightHipForceLab[2] = (
-                    ThighMass
-                    * arrayRightThighLinearAccelerationLab[2][FrameNumber]
-                    / 1e3
-                    - RightKneeForceLab[2]
-                    + FootMass * 9.81
-                )
-
-                # vector from center of mass to proximal point of load application
-                ProximalVector = RightHipCenterLab - RightThighCenterOfMass
-                # vector from center of mass to distal point of load application
-                DistalVector = RightKneeCenterLab - RightThighCenterOfMass
-
-                MomentFromProximalForce = (
-                    np.cross(ProximalVector, RightHipForceLab) / 1e3
-                )  # Convert from mm to meters
-                MomentFromDistalForce = (
-                    np.cross(DistalVector, RightKneeForceLab) / 1e3
-                )  # Convert from mm to meters
-
-                # Transform to Thigh Coordinate System
-                MomentFromProximalForce_Thigh = math.TransformVectorIntoMovingCoors(
-                    MomentFromProximalForce, RightEThighAnat
-                )
-                MomentfromDistalForce_Thigh = math.TransformVectorIntoMovingCoors(
-                    MomentFromDistalForce, RightEThighAnat
-                )
-                RightKneeMoment_Thigh = math.TransformVectorIntoMovingCoors(
-                    RightKneeMomentLab, RightEThighAnat
-                )
-                RightThighAnglesVelocityLab = np.array(
-                    [
-                        arrayRightThighAnglesVelocityLab[0][FrameNumber],
-                        arrayRightThighAnglesVelocityLab[1][FrameNumber],
-                        arrayRightThighAnglesVelocityLab[2][FrameNumber],
-                    ]
-                )
-                RightThighAnglesAccelerationLab = np.array(
-                    [
-                        arrayRightThighAnglesAccelerationLab[0][FrameNumber],
-                        arrayRightThighAnglesAccelerationLab[1][FrameNumber],
-                        arrayRightThighAnglesAccelerationLab[2][FrameNumber],
-                    ]
-                )
-                RightHipAnglesVelocityPelvis = np.array(
-                    [
-                        arrayRightHipAnglesVelocityPelvis[0][FrameNumber],
-                        arrayRightHipAnglesVelocityPelvis[1][FrameNumber],
-                        arrayRightHipAnglesVelocityPelvis[2][FrameNumber],
-                    ]
-                )
-                RightThighAnglesVelocity_Thigh = math.TransformVectorIntoMovingCoors(
-                    RightThighAnglesVelocityLab, RightEThighAnat
-                )
-                RightThighAnglesAcceleration_Thigh = (
-                    math.TransformVectorIntoMovingCoors(
-                        RightThighAnglesAccelerationLab, RightEThighAnat
-                    )
-                )
-                # Joint velocity is in proximal segment CS. Transform to Distal
-                RightHipAnglesVelocityLab = math.TransformVectorIntoLabCoors(
-                    RightHipAnglesVelocityPelvis, EPelvisAnat
-                )
-                RightHipAnglesVelocity_Thigh = math.TransformVectorIntoMovingCoors(
-                    RightHipAnglesVelocityLab, RightEThighAnat
-                )
-
-                RightHipMoment_Thigh[0] = (
-                    RightThighMassMomentOfInertia[0]
-                    * RightThighAnglesAcceleration_Thigh[0]
-                    + (
-                        RightThighMassMomentOfInertia[2]
-                        - RightThighMassMomentOfInertia[1]
-                    )
-                    * RightThighAnglesVelocity_Thigh[1]
-                    * RightThighAnglesVelocity_Thigh[2]
-                    - MomentFromProximalForce_Thigh[0]
-                    - MomentfromDistalForce_Thigh[0]
-                    - RightKneeMoment_Thigh[0]
-                )
-                RightHipMoment_Thigh[1] = (
-                    RightThighMassMomentOfInertia[1]
-                    * RightThighAnglesAcceleration_Thigh[1]
-                    + (
-                        RightThighMassMomentOfInertia[0]
-                        - RightThighMassMomentOfInertia[2]
-                    )
-                    * RightThighAnglesVelocity_Thigh[2]
-                    * RightThighAnglesVelocity_Thigh[0]
-                    - MomentFromProximalForce_Thigh[1]
-                    - MomentfromDistalForce_Thigh[1]
-                    - RightKneeMoment_Thigh[1]
-                )
-                RightHipMoment_Thigh[2] = (
-                    RightThighMassMomentOfInertia[2]
-                    * RightThighAnglesAcceleration_Thigh[2]
-                    + (
-                        RightThighMassMomentOfInertia[1]
-                        - RightThighMassMomentOfInertia[0]
-                    )
-                    * RightThighAnglesVelocity_Thigh[0]
-                    * RightThighAnglesVelocity_Thigh[1]
-                    - MomentFromProximalForce_Thigh[2]
-                    - MomentfromDistalForce_Thigh[2]
-                    - RightKneeMoment_Thigh[2]
-                )
-
-                # Transform Hip Moment to Lab coordinate system
-                RightHipMomentLab = math.TransformVectorIntoLabCoors(
-                    RightHipMoment_Thigh, RightEThighAnat
-                )
-
-                RightHipPower[0] = (
-                    RightHipMoment_Thigh[0] * RightHipAnglesVelocity_Thigh[0]
-                )
-                RightHipPower[1] = (
-                    RightHipMoment_Thigh[1] * RightHipAnglesVelocity_Thigh[1]
-                )
-                RightHipPower[2] = (
-                    RightHipMoment_Thigh[2] * RightHipAnglesVelocity_Thigh[2]
-                )
-
-                RightHipPowerTotal = np.dot(
-                    RightHipMoment_Thigh, RightHipAnglesVelocity_Thigh
-                )
-
-                # Normalize and Store in array
-                arrayRightHipMoment[0][FrameNumber] = (
-                    -Sign * RightHipMoment_Thigh[0] / float(self.valueBodyMass)
-                )
-                arrayRightHipMoment[1][FrameNumber] = RightHipMoment_Thigh[1] / float(
-                    self.valueBodyMass
-                )
-                arrayRightHipMoment[2][FrameNumber] = (
-                    -Sign * RightHipMoment_Thigh[2] / float(self.valueBodyMass)
-                )
-
-                arrayRightHipPower[0][FrameNumber] = RightHipPower[0] / float(
-                    self.valueBodyMass
-                )
-                arrayRightHipPower[1][FrameNumber] = RightHipPower[1] / float(
-                    self.valueBodyMass
-                )
-                arrayRightHipPower[2][FrameNumber] = RightHipPower[2] / float(
-                    self.valueBodyMass
-                )
-
-                arrayRightHipPowerTotal[0][FrameNumber] = 0
-                arrayRightHipPowerTotal[1][FrameNumber] = 0
-                arrayRightHipPowerTotal[2][FrameNumber] = RightHipPowerTotal / float(
-                    self.valueBodyMass
-                )
-
-                # Transform Hip Force into Thigh CS
-                RightHipForceThigh = math.TransformVectorIntoMovingCoors(
-                    RightHipForceLab, RightEThighAnat
-                )
-                arrayRightHipJRF[0][FrameNumber] = RightHipForceThigh[0] / float(
-                    self.valueBodyMass
-                )
-                arrayRightHipJRF[1][FrameNumber] = (
-                    Sign * RightHipForceThigh[1] / float(self.valueBodyMass)
-                )
-                arrayRightHipJRF[2][FrameNumber] = RightHipForceThigh[2] / float(
-                    self.valueBodyMass
-                )
-
-                # Add Ground Reaction Forces and Moments: Flip X and Y if walking in -X
-                # Correct for Lab CS
-                GRF = math.TransformVectorIntoMovingCoors(GRF, ELab)
-                # Account for side for ML and scale to BW
-                arrayRightGRF[0][FrameNumber] = GRF[0] / float(self.valueBodyMass)
-                arrayRightGRF[1][FrameNumber] = (
-                    Sign * GRF[1] / float(self.valueBodyMass)
-                )
-                arrayRightGRF[2][FrameNumber] = GRF[2] / float(self.valueBodyMass)
-
-                # Add Center of Pressure w.r.t. PELO
-                arrayRightGRM[0][FrameNumber] = (
-                    arrayCOPx[FP_FrameNumber] - arrayPelvisOrigin[0][FrameNumber]
-                )
-                arrayRightGRM[1][FrameNumber] = (
-                    arrayCOPy[FP_FrameNumber] - arrayPelvisOrigin[1][FrameNumber]
-                )
-                arrayRightGRM[2][FrameNumber] = (
-                    Sign * GRT[2] / float(self.valueBodyMass)
-                )
-
-                # Store in array of one frame
-                COP_Pelvis = np.array(
-                    [
-                        arrayRightGRM[0][FrameNumber],
-                        arrayRightGRM[1][FrameNumber],
-                        arrayRightGRM[2][FrameNumber],
-                    ]
-                )
-                # Correct for Lab CS
-                COP_Pelvis = math.TransformVectorIntoMovingCoors(COP_Pelvis, ELab)
-                # Write back to GRM, account for direction and side for ML, and scale to % leg length
-                arrayRightGRM[0][FrameNumber] = (
-                    100 * Direction * COP_Pelvis[0] / self.valueRightLegLength
-                )
-                arrayRightGRM[1][FrameNumber] = (
-                    100 * Sign * Direction * COP_Pelvis[1] / self.valueRightLegLength
-                )
-
-                # Index 0 is sum of sagittal plane moment, Index 1 is sum of sagittal power, Index3 is sum of total power
-                arrayRightMPSum[0][FrameNumber] = (
-                    arrayRightHipMoment[0][FrameNumber]
-                    + arrayRightKneeMoment[0][FrameNumber]
-                    + arrayRightAnkleMoment[0][FrameNumber]
-                )
-                arrayRightMPSum[1][FrameNumber] = (
-                    arrayRightHipPower[0][FrameNumber]
-                    + arrayRightKneePower[0][FrameNumber]
-                    + arrayRightAnklePower[0][FrameNumber]
-                )
-                arrayRightMPSum[2][FrameNumber] = (
-                    arrayRightHipPowerTotal[2][FrameNumber]
-                    + arrayRightKneePowerTotal[2][FrameNumber]
-                    + arrayRightAnklePowerTotal[2][FrameNumber]
-                )
-
-                # Add Foot CoP, compute components first and foot length
-                AnkleCOP = COP - RightAnkleCenterLab
-                AnkleCOP[2] = 0
-                # Account for foot progression angle and account for walk direction and M/L
-                AnkleCOP_Foot = math.TransformVectorIntoMovingCoors(
-                    AnkleCOP, RightEFootAnat
-                )
-                FL = np.linalg.norm(RightToeMarker - RightAnkleCenterLab)
-                # Normalize
-                AnkleCOP_Foot_Normalized = 100 * AnkleCOP_Foot / FL
-                arrayRightFootCoP[0][FrameNumber] = AnkleCOP_Foot_Normalized[0]
-                arrayRightFootCoP[1][FrameNumber] = -AnkleCOP_Foot_Normalized[1]
-                arrayRightFootCoP[2][FrameNumber] = 0
+            # Batched right distal-to-proximal inverse dynamics.
+            _batch_frames = np.arange(StartFrame, EndFrame)
+            _batch_slice = slice(StartFrame, EndFrame)
+            _batch_count = len(_batch_frames)
+            COP = np.broadcast_to(COP, (_batch_count, 3)).copy()
+            GRF = np.broadcast_to(GRF, (_batch_count, 3)).copy()
+            GRT = np.broadcast_to(GRT, (_batch_count, 3)).copy()
+            RightAnkleForceLab = np.broadcast_to(RightAnkleForceLab, (_batch_count, 3)).copy()
+            RightAnkleMoment_Foot = np.broadcast_to(RightAnkleMoment_Foot, (_batch_count, 3)).copy()
+            RightAnklePower = np.broadcast_to(RightAnklePower, (_batch_count, 3)).copy()
+            RightHipForceLab = np.broadcast_to(RightHipForceLab, (_batch_count, 3)).copy()
+            RightHipMoment_Thigh = np.broadcast_to(RightHipMoment_Thigh, (_batch_count, 3)).copy()
+            RightHipPower = np.broadcast_to(RightHipPower, (_batch_count, 3)).copy()
+            RightKneeForceLab = np.broadcast_to(RightKneeForceLab, (_batch_count, 3)).copy()
+            RightKneeMoment_Shank = np.broadcast_to(RightKneeMoment_Shank, (_batch_count, 3)).copy()
+            RightKneePower = np.broadcast_to(RightKneePower, (_batch_count, 3)).copy()
+            SacralMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(SacralMarkerX)[_batch_slice], Direction *
+                np.asarray(SacralMarkerY)[_batch_slice], np.asarray(SacralMarkerZ)[_batch_slice])
+            )
+            LeftASISMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(LeftASISMarkerX)[_batch_slice], Direction *
+                np.asarray(LeftASISMarkerY)[_batch_slice], np.asarray(LeftASISMarkerZ)[_batch_slice])
+            )
+            RightASISMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightASISMarkerX)[_batch_slice], Direction *
+                np.asarray(RightASISMarkerY)[_batch_slice], np.asarray(RightASISMarkerZ)[_batch_slice])
+            )
+            Sign = 1
+            RightThighMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightThighMarkerX)[_batch_slice], Direction *
+                np.asarray(RightThighMarkerY)[_batch_slice], np.asarray(RightThighMarkerZ)[_batch_slice])
+            )
+            RightLateralKneeMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightLateralKneeMarkerX)[_batch_slice],
+                Direction * np.asarray(RightLateralKneeMarkerY)[_batch_slice],
+                np.asarray(RightLateralKneeMarkerZ)[_batch_slice])
+            )
+            RightTibialMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightTibialMarkerX)[_batch_slice], Direction *
+                np.asarray(RightTibialMarkerY)[_batch_slice], np.asarray(RightTibialMarkerZ)[_batch_slice])
+            )
+            RightLateralAnkleMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightLateralAnkleMarkerX)[_batch_slice],
+                Direction * np.asarray(RightLateralAnkleMarkerY)[_batch_slice],
+                np.asarray(RightLateralAnkleMarkerZ)[_batch_slice])
+            )
+            RightToeMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightToeMarkerX)[_batch_slice], Direction *
+                np.asarray(RightToeMarkerY)[_batch_slice], np.asarray(RightToeMarkerZ)[_batch_slice])
+            )
+            RightMedialAnkleMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightMedialAnkleMarkerX)[_batch_slice],
+                Direction * np.asarray(RightMedialAnkleMarkerY)[_batch_slice],
+                np.asarray(RightMedialAnkleMarkerZ)[_batch_slice])
+            )
+            RightHeelMarker = (
+                math.FrameVector(_batch_count, Direction * np.asarray(RightHeelMarkerX)[_batch_slice], Direction *
+                np.asarray(RightHeelMarkerY)[_batch_slice], np.asarray(RightHeelMarkerZ)[_batch_slice])
+            )
+            if RightTibialTriadCheck is True:
+                RightTibialUpperMarker = (
+                    math.FrameVector(_batch_count, Direction * np.asarray(RightTibialUpperMarkerX)[_batch_slice],
+                    Direction * np.asarray(RightTibialUpperMarkerY)[_batch_slice],
+                    np.asarray(RightTibialUpperMarkerZ)[_batch_slice])
+                )
+                RightTibialLowerMarker = (
+                    math.FrameVector(_batch_count, Direction * np.asarray(RightTibialLowerMarkerX)[_batch_slice],
+                    Direction * np.asarray(RightTibialLowerMarkerY)[_batch_slice],
+                    np.asarray(RightTibialLowerMarkerZ)[_batch_slice])
+                )
+            RightHipCenterLab = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayRightHipCenter[0])[_batch_slice],
+                Direction * np.asarray(arrayRightHipCenter[1])[_batch_slice],
+                np.asarray(arrayRightHipCenter[2])[_batch_slice])
+            )
+            RightKneeCenterLab = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayRightKneeCenter[0])[_batch_slice],
+                Direction * np.asarray(arrayRightKneeCenter[1])[_batch_slice],
+                np.asarray(arrayRightKneeCenter[2])[_batch_slice])
+            )
+            RightAnkleCenterLab = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayRightAnkleCenter[0])[_batch_slice],
+                Direction * np.asarray(arrayRightAnkleCenter[1])[_batch_slice],
+                np.asarray(arrayRightAnkleCenter[2])[_batch_slice])
+            )
+            RightThighCenterOfMass = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayRightThighCenterOfMass[0])[_batch_slice],
+                Direction * np.asarray(arrayRightThighCenterOfMass[1])[_batch_slice],
+                np.asarray(arrayRightThighCenterOfMass[2])[_batch_slice])
+            )
+            RightShankCenterOfMass = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayRightShankCenterOfMass[0])[_batch_slice],
+                Direction * np.asarray(arrayRightShankCenterOfMass[1])[_batch_slice],
+                np.asarray(arrayRightShankCenterOfMass[2])[_batch_slice])
+            )
+            RightFootCenterOfMass = (
+                math.FrameVector(_batch_count, Direction * np.asarray(arrayRightFootCenterOfMass[0])[_batch_slice],
+                Direction * np.asarray(arrayRightFootCenterOfMass[1])[_batch_slice],
+                np.asarray(arrayRightFootCenterOfMass[2])[_batch_slice])
+            )
+            RightThighRadiusOfGyration = math.RadiusOfGyration(RightHipCenterLab, RightKneeCenterLab, 0.323, 0.323, 0.187) / 1000.0
+            RightShankRadiusOfGyration = math.RadiusOfGyration(RightKneeCenterLab, RightAnkleCenterLab, 0.302, 0.302, 0.087) / 1000.0
+            RightFootRadiusOfGyration = math.RadiusOfGyration(RightAnkleCenterLab, RightToeMarker, 0.148, 0.475, 0.475) / 1000.0
+            RightThighMassMomentOfInertia = ThighMass * np.square(RightThighRadiusOfGyration)
+            RightShankMassMomentOfInertia = ShankMass * np.square(RightShankRadiusOfGyration)
+            RightFootMassMomentOfInertia = FootMass * np.square(RightFootRadiusOfGyration)
+            FP_FrameNumber = np.asarray(_batch_frames * FP_FrameRate / MarkerFrameRate, dtype=np.intp)
+            FP_FrameNumber = np.minimum(FP_FrameNumber, FP_MaxIndex)
+            Tz = (
+                np.asarray(arrayMz)[FP_FrameNumber] + np.asarray(arrayFx)[FP_FrameNumber] *
+                (np.asarray(arrayCOPy)[FP_FrameNumber] - FP_Center[1] + FP_Origin[1]) -
+                np.asarray(arrayFy)[FP_FrameNumber] * (np.asarray(arrayCOPx)[FP_FrameNumber] - FP_Center[0] +
+                FP_Origin[0])
+            )
+            GRF[..., 0] = -Direction * np.asarray(arrayFx)[FP_FrameNumber]
+            GRF[..., 1] = -Direction * np.asarray(arrayFy)[FP_FrameNumber]
+            GRF[..., 2] = -np.asarray(arrayFz)[FP_FrameNumber]
+            GRT[..., 2] = -Tz / 1000.0
+            COP[..., 0] = Direction * np.asarray(arrayCOPx)[FP_FrameNumber]
+            COP[..., 1] = Direction * np.asarray(arrayCOPy)[FP_FrameNumber]
+            COP[..., 2] = 0
+            [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(LeftASISMarker, RightASISMarker, SacralMarker)
+            EPelvisAnat = math.TransformAnatCoorSysFromTechCoors(self.valueEPelvisAnatRelTech, EPelvisTech)
+            RightEThighTech = gait.TechCS_Thigh_Newington('Right', RightHipCenterLab, RightThighMarker, RightLateralKneeMarker)
+            RightEThighAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEThighAnatRelTech, RightEThighTech)
+            if RightTibialTriadCheck is True:
+                RightEShankTech = (
+                    gait.TechCS_Shank_Newington('Right', RightTibialUpperMarker, RightTibialLowerMarker,
+                    RightTibialMarker)
+                )
+            else:
+                RightEShankTech = gait.TechCS_Shank_Newington('Right', RightKneeCenterLab, RightTibialMarker, RightLateralAnkleMarker)
+            RightEShankProximalAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEShankProximalAnatRelTech, RightEShankTech)
+            RightEShankDistalAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEShankDistalAnatRelTech, RightEShankTech)
+            if RightMedialAnkleMarkerDropOff == 0:
+                RightEShankProximalAnat = (
+                    gait.AnatCS_Shank_Proximal_Newington('Right', RightKneeCenterLab, RightLateralKneeMarker,
+                    RightAnkleCenterLab)
+                )
+                RightEShankDistalAnat = (
+                    gait.AnatCS_Shank_Distal_VCM('Right', RightKneeCenterLab, RightAnkleCenterLab,
+                    RightLateralAnkleMarker)
+                )
+            RightEFootTech = gait.TechCS_Foot_Newington('Right', RightKneeCenterLab, RightAnkleCenterLab, RightToeMarker)
+            RightEFootAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEFootAnatRelTech, RightEFootTech)
+            try:
+                RightEFootTibAnat = math.TransformAnatCoorSysFromTechCoors(self.valueRightEFootAnat2RelTech, RightEFootTech)
+            except:
+                RightEFootTibAnat = np.matrix([[0.0 for m in range(3)] for n in range(3)])
+            # Ankle stage: all frames, using measured force-plate samples.
+            RightAnkleForceLab[..., 0] = (
+                FootMass * Direction * np.asarray(arrayRightFootLinearAccelerationLab[0])[_batch_slice] / 1000.0 -
+                GRF[..., 0]
+            )
+            RightAnkleForceLab[..., 1] = (
+                FootMass * Direction * np.asarray(arrayRightFootLinearAccelerationLab[1])[_batch_slice] / 1000.0 -
+                GRF[..., 1]
+            )
+            RightAnkleForceLab[..., 2] = (
+                FootMass * np.asarray(arrayRightFootLinearAccelerationLab[2])[_batch_slice] / 1000.0 - GRF[..., 2] +
+                FootMass * 9.81
+            )
+            ProximalVector = RightAnkleCenterLab - RightFootCenterOfMass
+            DistalVector = COP - RightFootCenterOfMass
+            MomentFromProximalForce = np.cross(ProximalVector, RightAnkleForceLab) / 1000.0
+            MomentFromDistalForce = np.cross(DistalVector, GRF) / 1000.0
+            MomentFromProximalForce_Foot = math.TransformVectorIntoMovingCoors(MomentFromProximalForce, RightEFootAnat)
+            MomentfromDistalForce_Foot = math.TransformVectorIntoMovingCoors(MomentFromDistalForce, RightEFootAnat)
+            GRT_Foot = math.TransformVectorIntoMovingCoors(GRT, RightEFootAnat)
+            RightFootAnglesVelocityLab = (
+                math.FrameVector(_batch_count, np.asarray(arrayRightFootAnglesVelocityLab[0])[_batch_slice],
+                np.asarray(arrayRightFootAnglesVelocityLab[1])[_batch_slice],
+                np.asarray(arrayRightFootAnglesVelocityLab[2])[_batch_slice])
+            )
+            RightFootAnglesAccelerationLab = (
+                math.FrameVector(_batch_count, np.asarray(arrayRightFootAnglesAccelerationLab[0])[_batch_slice],
+                np.asarray(arrayRightFootAnglesAccelerationLab[1])[_batch_slice],
+                np.asarray(arrayRightFootAnglesAccelerationLab[2])[_batch_slice])
+            )
+            RightAnkleAnglesVelocityShank = (
+                math.FrameVector(_batch_count, np.asarray(arrayRightAnkleAnglesVelocityShank[0])[_batch_slice],
+                np.asarray(arrayRightAnkleAnglesVelocityShank[1])[_batch_slice],
+                np.asarray(arrayRightAnkleAnglesVelocityShank[2])[_batch_slice])
+            )
+            RightFootAnglesVelocity_Foot = math.TransformVectorIntoMovingCoors(RightFootAnglesVelocityLab, RightEFootAnat)
+            RightFootAnglesAcceleration_Foot = math.TransformVectorIntoMovingCoors(RightFootAnglesAccelerationLab, RightEFootAnat)
+            if self.ShankCoordinateSystem == 'Distal':
+                RightAnkleAnglesVelocityLab = math.TransformVectorIntoLabCoors(RightAnkleAnglesVelocityShank, RightEShankDistalAnat)
+            if self.ShankCoordinateSystem == 'Proximal':
+                RightAnkleAnglesVelocityLab = math.TransformVectorIntoLabCoors(RightAnkleAnglesVelocityShank, RightEShankProximalAnat)
+            RightAnkleAnglesVelocity_Foot = math.TransformVectorIntoMovingCoors(RightAnkleAnglesVelocityLab, RightEFootAnat)
+            RightAnkleMoment_Foot[..., 0] = (
+                RightFootMassMomentOfInertia[..., 0] * RightFootAnglesAcceleration_Foot[..., 0] +
+                (RightFootMassMomentOfInertia[..., 2] - RightFootMassMomentOfInertia[..., 1]) *
+                RightFootAnglesVelocity_Foot[..., 1] * RightFootAnglesVelocity_Foot[..., 2] -
+                MomentFromProximalForce_Foot[..., 0] - MomentfromDistalForce_Foot[..., 0] - GRT_Foot[..., 0]
+            )
+            RightAnkleMoment_Foot[..., 1] = (
+                RightFootMassMomentOfInertia[..., 1] * RightFootAnglesAcceleration_Foot[..., 1] +
+                (RightFootMassMomentOfInertia[..., 0] - RightFootMassMomentOfInertia[..., 2]) *
+                RightFootAnglesVelocity_Foot[..., 2] * RightFootAnglesVelocity_Foot[..., 0] -
+                MomentFromProximalForce_Foot[..., 1] - MomentfromDistalForce_Foot[..., 1] - GRT_Foot[..., 1]
+            )
+            RightAnkleMoment_Foot[..., 2] = (
+                RightFootMassMomentOfInertia[..., 2] * RightFootAnglesAcceleration_Foot[..., 2] +
+                (RightFootMassMomentOfInertia[..., 1] - RightFootMassMomentOfInertia[..., 0]) *
+                RightFootAnglesVelocity_Foot[..., 0] * RightFootAnglesVelocity_Foot[..., 1] -
+                MomentFromProximalForce_Foot[..., 2] - MomentfromDistalForce_Foot[..., 2] - GRT_Foot[..., 2]
+            )
+            RightAnkleMomentLab = math.TransformVectorIntoLabCoors(RightAnkleMoment_Foot, RightEFootAnat)
+            RightAnklePower[..., 0] = RightAnkleMoment_Foot[..., 0] * RightAnkleAnglesVelocity_Foot[..., 0]
+            RightAnklePower[..., 1] = RightAnkleMoment_Foot[..., 1] * RightAnkleAnglesVelocity_Foot[..., 1]
+            RightAnklePower[..., 2] = RightAnkleMoment_Foot[..., 2] * RightAnkleAnglesVelocity_Foot[..., 2]
+            RightAnklePowerTotal = np.sum(RightAnkleMoment_Foot * RightAnkleAnglesVelocity_Foot, axis=-1)
+            arrayRightAnkleMoment[0][_batch_slice] = np.broadcast_to(-Sign * RightAnkleMoment_Foot[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightAnkleMoment[1][_batch_slice] = np.broadcast_to(RightAnkleMoment_Foot[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightAnkleMoment[2][_batch_slice] = np.broadcast_to(-Sign * RightAnkleMoment_Foot[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightAnklePower[0][_batch_slice] = np.broadcast_to(RightAnklePower[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightAnklePower[1][_batch_slice] = np.broadcast_to(RightAnklePower[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightAnklePower[2][_batch_slice] = np.broadcast_to(RightAnklePower[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightAnklePowerTotal[0][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayRightAnklePowerTotal[1][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayRightAnklePowerTotal[2][_batch_slice] = np.broadcast_to(RightAnklePowerTotal / float(self.valueBodyMass), (_batch_count,))
+            RightAnkleForceFoot = math.TransformVectorIntoMovingCoors(RightAnkleForceLab, RightEFootTibAnat)
+            arrayRightAnkleJRF[0][_batch_slice] = np.broadcast_to(RightAnkleForceFoot[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightAnkleJRF[1][_batch_slice] = np.broadcast_to(Sign * RightAnkleForceFoot[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightAnkleJRF[2][_batch_slice] = np.broadcast_to(RightAnkleForceFoot[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            RightAnkleForceLab = -RightAnkleForceLab
+            RightAnkleMomentLab = -RightAnkleMomentLab
+            # Knee stage depends on the completed ankle forces and moments.
+            RightKneeForceLab[..., 0] = (
+                ShankMass * Direction * np.asarray(arrayRightShankLinearAccelerationLab[0])[_batch_slice] / 1000.0 -
+                RightAnkleForceLab[..., 0]
+            )
+            RightKneeForceLab[..., 1] = (
+                ShankMass * Direction * np.asarray(arrayRightShankLinearAccelerationLab[1])[_batch_slice] / 1000.0 -
+                RightAnkleForceLab[..., 1]
+            )
+            RightKneeForceLab[..., 2] = (
+                ShankMass * np.asarray(arrayRightShankLinearAccelerationLab[2])[_batch_slice] / 1000.0 -
+                RightAnkleForceLab[..., 2] + FootMass * 9.81
+            )
+            ProximalVector = RightKneeCenterLab - RightShankCenterOfMass
+            DistalVector = RightAnkleCenterLab - RightShankCenterOfMass
+            MomentFromProximalForce = np.cross(ProximalVector, RightKneeForceLab) / 1000.0
+            MomentFromDistalForce = np.cross(DistalVector, RightAnkleForceLab) / 1000.0
+            if self.ShankCoordinateSystem == 'Distal':
+                MomentFromProximalForce_Shank = math.TransformVectorIntoMovingCoors(MomentFromProximalForce, RightEShankDistalAnat)
+                MomentfromDistalForce_Shank = math.TransformVectorIntoMovingCoors(MomentFromDistalForce, RightEShankDistalAnat)
+                RightAnkleMoment_Shank = math.TransformVectorIntoMovingCoors(RightAnkleMomentLab, RightEShankDistalAnat)
+                RightShankAnglesVelocityLab = (
+                    math.FrameVector(_batch_count, np.asarray(arrayRightShankAnglesVelocityLab[0])[_batch_slice],
+                    np.asarray(arrayRightShankAnglesVelocityLab[1])[_batch_slice],
+                    np.asarray(arrayRightShankAnglesVelocityLab[2])[_batch_slice])
+                )
+                RightShankAnglesAccelerationLab = (
+                    math.FrameVector(_batch_count, np.asarray(arrayRightShankAnglesAccelerationLab[0])[_batch_slice],
+                    np.asarray(arrayRightShankAnglesAccelerationLab[1])[_batch_slice],
+                    np.asarray(arrayRightShankAnglesAccelerationLab[2])[_batch_slice])
+                )
+                RightKneeAnglesVelocityThigh = (
+                    math.FrameVector(_batch_count, np.asarray(arrayRightKneeAnglesVelocityThigh[0])[_batch_slice],
+                    np.asarray(arrayRightKneeAnglesVelocityThigh[1])[_batch_slice],
+                    np.asarray(arrayRightKneeAnglesVelocityThigh[2])[_batch_slice])
+                )
+                RightShankAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(RightShankAnglesVelocityLab, RightEShankDistalAnat)
+                RightShankAnglesAcceleration_Shank = math.TransformVectorIntoMovingCoors(RightShankAnglesAccelerationLab, RightEShankDistalAnat)
+                RightKneeAnglesVelocityLab = math.TransformVectorIntoLabCoors(RightKneeAnglesVelocityThigh, RightEThighAnat)
+                RightKneeAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(RightKneeAnglesVelocityLab, RightEShankDistalAnat)
+            if self.ShankCoordinateSystem == 'Proximal':
+                MomentFromProximalForce_Shank = math.TransformVectorIntoMovingCoors(MomentFromProximalForce, RightEShankProximalAnat)
+                MomentfromDistalForce_Shank = math.TransformVectorIntoMovingCoors(MomentFromDistalForce, RightEShankProximalAnat)
+                RightAnkleMoment_Shank = math.TransformVectorIntoMovingCoors(RightAnkleMomentLab, RightEShankProximalAnat)
+                RightShankAnglesVelocityLab = (
+                    math.FrameVector(_batch_count, np.asarray(arrayRightShankAnglesVelocityLab[0])[_batch_slice],
+                    np.asarray(arrayRightShankAnglesVelocityLab[1])[_batch_slice],
+                    np.asarray(arrayRightShankAnglesVelocityLab[2])[_batch_slice])
+                )
+                RightShankAnglesAccelerationLab = (
+                    math.FrameVector(_batch_count, np.asarray(arrayRightShankAnglesAccelerationLab[0])[_batch_slice],
+                    np.asarray(arrayRightShankAnglesAccelerationLab[1])[_batch_slice],
+                    np.asarray(arrayRightShankAnglesAccelerationLab[2])[_batch_slice])
+                )
+                RightKneeAnglesVelocityThigh = (
+                    math.FrameVector(_batch_count, np.asarray(arrayRightKneeAnglesVelocityThigh[0])[_batch_slice],
+                    np.asarray(arrayRightKneeAnglesVelocityThigh[1])[_batch_slice],
+                    np.asarray(arrayRightKneeAnglesVelocityThigh[2])[_batch_slice])
+                )
+                RightShankAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(RightShankAnglesVelocityLab, RightEShankProximalAnat)
+                RightShankAnglesAcceleration_Shank = math.TransformVectorIntoMovingCoors(RightShankAnglesAccelerationLab, RightEShankProximalAnat)
+                RightKneeAnglesVelocityLab = math.TransformVectorIntoLabCoors(RightKneeAnglesVelocityThigh, RightEThighAnat)
+                RightKneeAnglesVelocity_Shank = math.TransformVectorIntoMovingCoors(RightKneeAnglesVelocityLab, RightEShankProximalAnat)
+            RightKneeMoment_Shank[..., 0] = (
+                RightShankMassMomentOfInertia[..., 0] * RightShankAnglesAcceleration_Shank[..., 0] +
+                (RightShankMassMomentOfInertia[..., 2] - RightShankMassMomentOfInertia[..., 1]) *
+                RightShankAnglesVelocity_Shank[..., 1] * RightShankAnglesVelocity_Shank[..., 2] -
+                MomentFromProximalForce_Shank[..., 0] - MomentfromDistalForce_Shank[..., 0] -
+                RightAnkleMoment_Shank[..., 0]
+            )
+            RightKneeMoment_Shank[..., 1] = (
+                RightShankMassMomentOfInertia[..., 1] * RightShankAnglesAcceleration_Shank[..., 1] +
+                (RightShankMassMomentOfInertia[..., 0] - RightShankMassMomentOfInertia[..., 2]) *
+                RightShankAnglesVelocity_Shank[..., 2] * RightShankAnglesVelocity_Shank[..., 0] -
+                MomentFromProximalForce_Shank[..., 1] - MomentfromDistalForce_Shank[..., 1] -
+                RightAnkleMoment_Shank[..., 1]
+            )
+            RightKneeMoment_Shank[..., 2] = (
+                RightShankMassMomentOfInertia[..., 2] * RightShankAnglesAcceleration_Shank[..., 2] +
+                (RightShankMassMomentOfInertia[..., 1] - RightShankMassMomentOfInertia[..., 0]) *
+                RightShankAnglesVelocity_Shank[..., 0] * RightShankAnglesVelocity_Shank[..., 1] -
+                MomentFromProximalForce_Shank[..., 2] - MomentfromDistalForce_Shank[..., 2] -
+                RightAnkleMoment_Shank[..., 2]
+            )
+            if self.ShankCoordinateSystem == 'Distal':
+                RightKneeMomentLab = math.TransformVectorIntoLabCoors(RightKneeMoment_Shank, RightEShankDistalAnat)
+            if self.ShankCoordinateSystem == 'Proximal':
+                RightKneeMomentLab = math.TransformVectorIntoLabCoors(RightKneeMoment_Shank, RightEShankProximalAnat)
+            RightKneePower[..., 0] = RightKneeMoment_Shank[..., 0] * RightKneeAnglesVelocity_Shank[..., 0]
+            RightKneePower[..., 1] = RightKneeMoment_Shank[..., 1] * RightKneeAnglesVelocity_Shank[..., 1]
+            RightKneePower[..., 2] = RightKneeMoment_Shank[..., 2] * RightKneeAnglesVelocity_Shank[..., 2]
+            RightKneePowerTotal = np.sum(RightKneeMoment_Shank * RightKneeAnglesVelocity_Shank, axis=-1)
+            arrayRightKneeMoment[0][_batch_slice] = np.broadcast_to(-Sign * RightKneeMoment_Shank[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightKneeMoment[1][_batch_slice] = np.broadcast_to(-RightKneeMoment_Shank[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightKneeMoment[2][_batch_slice] = np.broadcast_to(-Sign * RightKneeMoment_Shank[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightKneePower[0][_batch_slice] = np.broadcast_to(RightKneePower[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightKneePower[1][_batch_slice] = np.broadcast_to(RightKneePower[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightKneePower[2][_batch_slice] = np.broadcast_to(RightKneePower[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightKneePowerTotal[0][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayRightKneePowerTotal[1][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayRightKneePowerTotal[2][_batch_slice] = np.broadcast_to(RightKneePowerTotal / float(self.valueBodyMass), (_batch_count,))
+            RightKneeForceTib = math.TransformVectorIntoMovingCoors(RightKneeForceLab, RightEShankProximalAnat)
+            arrayRightKneeJRF[0][_batch_slice] = np.broadcast_to(RightKneeForceTib[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightKneeJRF[1][_batch_slice] = np.broadcast_to(Sign * RightKneeForceTib[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightKneeJRF[2][_batch_slice] = np.broadcast_to(RightKneeForceTib[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            RightKneeForceLab = -RightKneeForceLab
+            RightKneeMomentLab = -RightKneeMomentLab
+            # Hip stage depends on the completed knee forces and moments.
+            RightHipForceLab[..., 0] = (
+                ThighMass * Direction * np.asarray(arrayRightThighLinearAccelerationLab[0])[_batch_slice] / 1000.0 -
+                RightKneeForceLab[..., 0]
+            )
+            RightHipForceLab[..., 1] = (
+                ThighMass * Direction * np.asarray(arrayRightThighLinearAccelerationLab[1])[_batch_slice] / 1000.0 -
+                RightKneeForceLab[..., 1]
+            )
+            RightHipForceLab[..., 2] = (
+                ThighMass * np.asarray(arrayRightThighLinearAccelerationLab[2])[_batch_slice] / 1000.0 -
+                RightKneeForceLab[..., 2] + FootMass * 9.81
+            )
+            ProximalVector = RightHipCenterLab - RightThighCenterOfMass
+            DistalVector = RightKneeCenterLab - RightThighCenterOfMass
+            MomentFromProximalForce = np.cross(ProximalVector, RightHipForceLab) / 1000.0
+            MomentFromDistalForce = np.cross(DistalVector, RightKneeForceLab) / 1000.0
+            MomentFromProximalForce_Thigh = math.TransformVectorIntoMovingCoors(MomentFromProximalForce, RightEThighAnat)
+            MomentfromDistalForce_Thigh = math.TransformVectorIntoMovingCoors(MomentFromDistalForce, RightEThighAnat)
+            RightKneeMoment_Thigh = math.TransformVectorIntoMovingCoors(RightKneeMomentLab, RightEThighAnat)
+            RightThighAnglesVelocityLab = (
+                math.FrameVector(_batch_count, np.asarray(arrayRightThighAnglesVelocityLab[0])[_batch_slice],
+                np.asarray(arrayRightThighAnglesVelocityLab[1])[_batch_slice],
+                np.asarray(arrayRightThighAnglesVelocityLab[2])[_batch_slice])
+            )
+            RightThighAnglesAccelerationLab = (
+                math.FrameVector(_batch_count, np.asarray(arrayRightThighAnglesAccelerationLab[0])[_batch_slice],
+                np.asarray(arrayRightThighAnglesAccelerationLab[1])[_batch_slice],
+                np.asarray(arrayRightThighAnglesAccelerationLab[2])[_batch_slice])
+            )
+            RightHipAnglesVelocityPelvis = (
+                math.FrameVector(_batch_count, np.asarray(arrayRightHipAnglesVelocityPelvis[0])[_batch_slice],
+                np.asarray(arrayRightHipAnglesVelocityPelvis[1])[_batch_slice],
+                np.asarray(arrayRightHipAnglesVelocityPelvis[2])[_batch_slice])
+            )
+            RightThighAnglesVelocity_Thigh = math.TransformVectorIntoMovingCoors(RightThighAnglesVelocityLab, RightEThighAnat)
+            RightThighAnglesAcceleration_Thigh = math.TransformVectorIntoMovingCoors(RightThighAnglesAccelerationLab, RightEThighAnat)
+            RightHipAnglesVelocityLab = math.TransformVectorIntoLabCoors(RightHipAnglesVelocityPelvis, EPelvisAnat)
+            RightHipAnglesVelocity_Thigh = math.TransformVectorIntoMovingCoors(RightHipAnglesVelocityLab, RightEThighAnat)
+            RightHipMoment_Thigh[..., 0] = (
+                RightThighMassMomentOfInertia[..., 0] * RightThighAnglesAcceleration_Thigh[..., 0] +
+                (RightThighMassMomentOfInertia[..., 2] - RightThighMassMomentOfInertia[..., 1]) *
+                RightThighAnglesVelocity_Thigh[..., 1] * RightThighAnglesVelocity_Thigh[..., 2] -
+                MomentFromProximalForce_Thigh[..., 0] - MomentfromDistalForce_Thigh[..., 0] -
+                RightKneeMoment_Thigh[..., 0]
+            )
+            RightHipMoment_Thigh[..., 1] = (
+                RightThighMassMomentOfInertia[..., 1] * RightThighAnglesAcceleration_Thigh[..., 1] +
+                (RightThighMassMomentOfInertia[..., 0] - RightThighMassMomentOfInertia[..., 2]) *
+                RightThighAnglesVelocity_Thigh[..., 2] * RightThighAnglesVelocity_Thigh[..., 0] -
+                MomentFromProximalForce_Thigh[..., 1] - MomentfromDistalForce_Thigh[..., 1] -
+                RightKneeMoment_Thigh[..., 1]
+            )
+            RightHipMoment_Thigh[..., 2] = (
+                RightThighMassMomentOfInertia[..., 2] * RightThighAnglesAcceleration_Thigh[..., 2] +
+                (RightThighMassMomentOfInertia[..., 1] - RightThighMassMomentOfInertia[..., 0]) *
+                RightThighAnglesVelocity_Thigh[..., 0] * RightThighAnglesVelocity_Thigh[..., 1] -
+                MomentFromProximalForce_Thigh[..., 2] - MomentfromDistalForce_Thigh[..., 2] -
+                RightKneeMoment_Thigh[..., 2]
+            )
+            RightHipMomentLab = math.TransformVectorIntoLabCoors(RightHipMoment_Thigh, RightEThighAnat)
+            RightHipPower[..., 0] = RightHipMoment_Thigh[..., 0] * RightHipAnglesVelocity_Thigh[..., 0]
+            RightHipPower[..., 1] = RightHipMoment_Thigh[..., 1] * RightHipAnglesVelocity_Thigh[..., 1]
+            RightHipPower[..., 2] = RightHipMoment_Thigh[..., 2] * RightHipAnglesVelocity_Thigh[..., 2]
+            RightHipPowerTotal = np.sum(RightHipMoment_Thigh * RightHipAnglesVelocity_Thigh, axis=-1)
+            arrayRightHipMoment[0][_batch_slice] = np.broadcast_to(-Sign * RightHipMoment_Thigh[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightHipMoment[1][_batch_slice] = np.broadcast_to(RightHipMoment_Thigh[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightHipMoment[2][_batch_slice] = np.broadcast_to(-Sign * RightHipMoment_Thigh[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightHipPower[0][_batch_slice] = np.broadcast_to(RightHipPower[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightHipPower[1][_batch_slice] = np.broadcast_to(RightHipPower[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightHipPower[2][_batch_slice] = np.broadcast_to(RightHipPower[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightHipPowerTotal[0][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayRightHipPowerTotal[1][_batch_slice] = np.broadcast_to(0, (_batch_count,))
+            arrayRightHipPowerTotal[2][_batch_slice] = np.broadcast_to(RightHipPowerTotal / float(self.valueBodyMass), (_batch_count,))
+            RightHipForceThigh = math.TransformVectorIntoMovingCoors(RightHipForceLab, RightEThighAnat)
+            arrayRightHipJRF[0][_batch_slice] = np.broadcast_to(RightHipForceThigh[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightHipJRF[1][_batch_slice] = np.broadcast_to(Sign * RightHipForceThigh[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightHipJRF[2][_batch_slice] = np.broadcast_to(RightHipForceThigh[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            GRF = math.TransformVectorIntoMovingCoors(GRF, ELab)
+            arrayRightGRF[0][_batch_slice] = np.broadcast_to(GRF[..., 0] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightGRF[1][_batch_slice] = np.broadcast_to(Sign * GRF[..., 1] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightGRF[2][_batch_slice] = np.broadcast_to(GRF[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            arrayRightGRM[0][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayCOPx)[FP_FrameNumber] -
+                np.asarray(arrayPelvisOrigin[0])[_batch_slice], (_batch_count,))
+            )
+            arrayRightGRM[1][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayCOPy)[FP_FrameNumber] -
+                np.asarray(arrayPelvisOrigin[1])[_batch_slice], (_batch_count,))
+            )
+            arrayRightGRM[2][_batch_slice] = np.broadcast_to(Sign * GRT[..., 2] / float(self.valueBodyMass), (_batch_count,))
+            COP_Pelvis = (
+                math.FrameVector(_batch_count, np.asarray(arrayRightGRM[0])[_batch_slice],
+                np.asarray(arrayRightGRM[1])[_batch_slice], np.asarray(arrayRightGRM[2])[_batch_slice])
+            )
+            COP_Pelvis = math.TransformVectorIntoMovingCoors(COP_Pelvis, ELab)
+            arrayRightGRM[0][_batch_slice] = np.broadcast_to(100 * Direction * COP_Pelvis[..., 0] / self.valueRightLegLength, (_batch_count,))
+            arrayRightGRM[1][_batch_slice] = (
+                np.broadcast_to(100 * Sign * Direction * COP_Pelvis[..., 1] / self.valueRightLegLength,
+                (_batch_count,))
+            )
+            arrayRightMPSum[0][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayRightHipMoment[0])[_batch_slice] +
+                np.asarray(arrayRightKneeMoment[0])[_batch_slice] +
+                np.asarray(arrayRightAnkleMoment[0])[_batch_slice], (_batch_count,))
+            )
+            arrayRightMPSum[1][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayRightHipPower[0])[_batch_slice] +
+                np.asarray(arrayRightKneePower[0])[_batch_slice] +
+                np.asarray(arrayRightAnklePower[0])[_batch_slice], (_batch_count,))
+            )
+            arrayRightMPSum[2][_batch_slice] = (
+                np.broadcast_to(np.asarray(arrayRightHipPowerTotal[2])[_batch_slice] +
+                np.asarray(arrayRightKneePowerTotal[2])[_batch_slice] +
+                np.asarray(arrayRightAnklePowerTotal[2])[_batch_slice], (_batch_count,))
+            )
+            AnkleCOP = COP - RightAnkleCenterLab
+            AnkleCOP[..., 2] = 0
+            AnkleCOP_Foot = math.TransformVectorIntoMovingCoors(AnkleCOP, RightEFootAnat)
+            FL = np.linalg.norm(RightToeMarker - RightAnkleCenterLab, axis=-1)
+            AnkleCOP_Foot_Normalized = 100 * AnkleCOP_Foot / FL[..., None]
+            arrayRightFootCoP[0][_batch_slice] = np.broadcast_to(AnkleCOP_Foot_Normalized[..., 0], (_batch_count,))
+            arrayRightFootCoP[1][_batch_slice] = np.broadcast_to(-AnkleCOP_Foot_Normalized[..., 1], (_batch_count,))
+            arrayRightFootCoP[2][_batch_slice] = np.broadcast_to(0, (_batch_count,))
 
         # =============================================================================
         #         Write Kinetics Outputs to C3D File
@@ -8104,9 +5620,18 @@ class Dynamic_Main:
 if __name__ == "__main__":
     try:
         print("[DynamicMain] Starting Dynamic_Main()...", flush=True)
+        from time import perf_counter
+        _dynamic_started = perf_counter()
         model = Dynamic_Main()
+        _dynamic_seconds = perf_counter() - _dynamic_started
         print("[DynamicMain] Dynamic_Main() completed! Starting CreateGCD_Main...", flush=True)
+        _gcd_started = perf_counter()
         CreateGCD_Main(model.getModel(), sessionPath, filename, fields, TestingCondition)
+        _gcd_seconds = perf_counter() - _gcd_started
+        artifact = _write_manifest.publish(fields, StaticDataFileName, VersionNumber,
+            Path(fields["Path"]) / "GCD" / (Path(filename).stem + ".GCD"),
+            timings={"dynamic_s": _dynamic_seconds, "gcd_s": _gcd_seconds})
+        print("[WRITE_MANIFEST] " + str(artifact), flush=True)
         print("[DynamicMain] CreateGCD_Main completed successfully!", flush=True)
     except BaseException as e:
         import traceback

@@ -95,16 +95,20 @@ class SimModlOutput:
             self.Markers[name] = {}
             CreateModeledMarker(name)
         else:
+            import gapi
+            if gapi.dynamic_write_manifest is not None:
+                CreateModeledMarker(name)
             print(f"Marker '{name}' already exists.")
 
-    def SetModelOutput(self, modelOutputName, components, e,start,end,offset=0):
+    def SetModelOutput(self, modelOutputName, components, e,start,end,offset=None):
         if modelOutputName in self.Markers:
             self.Markers[modelOutputName]["X"] = components[0]
             self.Markers[modelOutputName]["Y"] = components[1]
             self.Markers[modelOutputName]["Z"] = components[2]
             self.Markers[modelOutputName]["Exists"] = e
             SetTrajectory(
-                modelOutputName, components[0], components[1], components[2], e,start,end,offset
+                modelOutputName, components[0], components[1], components[2], e,start,end,
+                getattr(self, "trajectory_offset", 0) if offset is None else offset
             )
             return
         for key, val in self.model.items():

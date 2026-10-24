@@ -110,7 +110,9 @@ class CreateGCD_Main():
                 legacy_gcd.unlink()
             except OSError:
                 pass
-        GCDFile = open(GCDFileName,'w+')
+        import tempfile
+        _gcd_fd, _gcd_pending = tempfile.mkstemp(prefix=".gcd-", dir=str(gcd_dir))
+        GCDFile = os.fdopen(_gcd_fd,'w+')
         # Report Generator Requires this line to read GCD file
         GCDFile.write('#!DST-Python3_ShrineGaitModel' + '\n')
         # Write File Creattion Date Time
@@ -1462,6 +1464,7 @@ class CreateGCD_Main():
         
         
         GCDFile.close()
+        os.replace(_gcd_pending, GCDFileName)
         
 #Calls the main Function
 if __name__ == "__main__":

@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
 
 from app.models.data_models import AppSettings
 from app.services.settings_service import SettingsService
+from app.services.dynamic_batch_service import DynamicBatchService
+from app.services.qtm_write_service import QTMWriteService
 from app.ui.pages.case_presentation_page import CasePresentationPage, NO_PRESENTATION_SELECTION, NO_PROCESSED_TRIALS
 from app.ui.pages.dashboard_page import DashboardPage
 from app.ui.pages.dynamic_analysis_page import DynamicAnalysisPage
@@ -339,6 +341,8 @@ class MainWindow(QMainWindow):
         self._active_analysis_context = None
         self._splash = splash
         self._should_maximize = False
+        self._dynamic_batch = DynamicBatchService(self._settings.conda_env_name, self)
+        self._qtm_writes = QTMWriteService(self)
 
         self._setup_window()
         self._create_ui()
@@ -421,7 +425,7 @@ class MainWindow(QMainWindow):
 
         # Primary Workflow Pages
         self._static_page = StaticAnalysisPage()
-        self._dynamic_page = DynamicAnalysisPage()
+        self._dynamic_page = DynamicAnalysisPage(batch_service=self._dynamic_batch, write_service=self._qtm_writes)
         self._presentation_page = CasePresentationPage()
 
         # Supporting Pages
@@ -456,8 +460,13 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status_bar)
         self._status_label = QLabel("Clinical workstation ready")
         status_bar.addPermanentWidget(self._status_label)
+        self._batch_status = QLabel("")
+        status_bar.addPermanentWidget(self._batch_status)
 
     def _connect_signals(self) -> None:
+        self._dynamic_batch.changed.connect(self._update_batch_status)
+        self._qtm_writes.confirmation_ready.connect(self._confirm_write_operation)
+        self._qtm_writes.error.connect(self._write_error)
         # Sidebar navigation
         self._sidebar.page_selected.connect(self._navigate_to)
 
@@ -497,6 +506,30 @@ class MainWindow(QMainWindow):
         "qtm": "QTM Bridge",
         "settings": "Settings",
     }
+
+    @Slot()
+    def _update_batch_status(self):
+        jobs = self._dynamic_batch.jobs
+        if self._dynamic_batch.is_running:
+            done = sum(j.state in {"COMPLETED", "FAILED", "CANCELLED"} for j in jobs)
+            self._batch_status.setText(f"Dynamic: {done}/{len(jobs)} trials finished")
+        else:
+            self._batch_status.setText("")
+
+    def _confirm_write_operation(self, payload):
+        try:
+            self._qtm_writes.start_confirmed(payload["paths"])
+        except Exception as exc:
+            self._write_error(str(exc))
+
+    def _write_error(self, message):
+        self._dynamic_page._refresh_batch()
+        self._dynamic_page._write_status.setText(message)
+
+    def closeEvent(self, event):
+        self._dynamic_batch.shutdown()
+        self._qtm_writes.shutdown()
+        super().closeEvent(event)
 
     @Slot(str)
     def _navigate_to(self, page_key: str) -> None:

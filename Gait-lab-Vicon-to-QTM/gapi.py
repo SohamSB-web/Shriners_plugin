@@ -29,6 +29,16 @@ from proto import qtm_data_transfer_pb2_grpc,qtm_data_transfer_pb2
 TKINTER_APP_GRPC_PORT = 50051 # Port this Tkinter app listens on
 QTM_SCRIPT_GRPC_PORT = 50052  # Port the QTM script will listen on
 
+# Set only by the dynamic entry point; static processing and event tools retain their API.
+dynamic_write_manifest = None
+
+
+def begin_local_dynamic(session, trial, run_id=None):
+    global dynamic_write_manifest
+    from app.services.dynamic_write_manifest import WriteManifest
+    dynamic_write_manifest = WriteManifest(session, trial, run_id)
+    return dynamic_write_manifest
+
 class QtmTkinterBridgeServicer(qtm_data_transfer_pb2_grpc.QtmTkinterBridgeServicer):
     def __init__(self ):
         #self.app_gui = app_gui
@@ -57,6 +67,8 @@ def _is_qtm_port_open():
 
 
 def grpc_send_command(command_name, command_args_json):
+    if dynamic_write_manifest is not None:
+        raise RuntimeError("Live QTM commands are disabled in numerical dynamic workers")
     if not _is_qtm_port_open():
         # QTM script is not running on port 50052; return None immediately without 5s timeout
         return None
@@ -81,6 +93,9 @@ def grpc_send_command(command_name, command_args_json):
     return None
 
 def SetTrajectory(name,X,Y,Z,exists,start,end,offset=0, target_range=None):
+    if dynamic_write_manifest is not None:
+        dynamic_write_manifest.trajectory(name, X, Y, Z, exists, start, end, offset, target_range)
+        return
     # start/end are the existing half-open processing window; offset maps
     # source array index zero to the absolute QTM sample index.
     if not (len(X) == len(Y) == len(Z) == len(exists)):
@@ -172,6 +187,9 @@ def SetEvents(events_dict, frequency, offset=0, trial_name=None):
 
 
 def CreateModeledMarker(markerName):
+    if dynamic_write_manifest is not None:
+        dynamic_write_manifest.create(markerName)
+        return
     
     grpc_send_command("CreateModelMarker", json.dumps({"markerName": markerName}))
 def ResetTimeline():
@@ -186,6 +204,8 @@ def GetEvents(name,fields):
     return [],[]
 
 def GetForcePlate():
+    if dynamic_write_manifest is not None:
+        return {}  # Use this trial's saved C3D platform data, never the active QTM file.
     payload=grpc_send_command("GetForcePlate", json.dumps({}))
     if payload is None:
         return {}
@@ -245,4 +265,3 @@ if __name__ == '__main__':
     # This would require getting the server instance from run_tkinter_grpc_server
     print("Exiting main thread.")
 
-   

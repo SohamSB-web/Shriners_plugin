@@ -45,6 +45,14 @@ except Exception as e:
 # Configuration
 TKINTER_APP_GRPC_PORT = 50051  # Port the Tkinter app listens on
 QTM_SCRIPT_GRPC_PORT = 50052   # Port this QTM script will listen on
+from app.services.qtm_command_dispatcher import QTMCommandDispatcher, DISPATCH_COMMAND
+
+_trajectory_dispatcher = None
+
+
+def _execute_trajectory_command(command, args):
+    from app.services.qtm_trajectory_protocol import guarded_trajectory_command
+    return guarded_trajectory_command(qtm, tline, createMarker, setTrajectory, command, args)
 
 def get_current_open_trial_name():
     """
@@ -87,6 +95,28 @@ def get_current_open_trial_name():
 class QtmCommandServicer(qtm_data_transfer_pb2_grpc.QtmTkinterBridgeServicer):
     # This method is called by the Tkinter App
     def SendCommandToQtm(self, request, context):
+        try:
+            command = request.command_name
+            args = json.loads(request.command_args_json or "{}")
+            if command in {"BeginTrajectoryBatch", "QueueTrajectoryCommand", "GetTrajectoryCommandStatus", "CancelQueuedTrajectoryCommand", "EndTrajectoryBatch"}:
+                if _trajectory_dispatcher is None:
+                    raise RuntimeError("Reload the updated Shriners QTM scripting bridge")
+                result = _trajectory_dispatcher.receive(command, args)
+                return qtm_data_transfer_pb2.Ack(message=json.dumps(result), success=True)
+            if command in {"SetTrajectory", "CreateModelMarker", "GetTrajectoryWriteContext",
+                           "ApplyTrajectoryOperation", "VerifyTrajectoryOperation"}:
+                raise RuntimeError("Direct worker-thread trajectory commands are disabled. Use Write Operation with the updated scripting dispatcher.")
+            if _trajectory_dispatcher is None:
+                raise RuntimeError("QTM scripting dispatcher is not initialized")
+            # Serialize lease acquisition against existing event/static bridge requests.
+            with _trajectory_dispatcher.lock:
+                if _trajectory_dispatcher.token is not None:
+                    raise RuntimeError("Trajectory writing is active; other bridge commands are temporarily unavailable")
+                return self._execute_legacy_command(request, context)
+        except Exception as exc:
+            return qtm_data_transfer_pb2.Ack(message=str(exc), success=False)
+
+    def _execute_legacy_command(self, request, context):
         cmd_name = request.command_name
         cmd_args_json = request.command_args_json
         print(f"QTM Server: Received command '{cmd_name}' ")
@@ -95,7 +125,7 @@ class QtmCommandServicer(qtm_data_transfer_pb2_grpc.QtmTkinterBridgeServicer):
             args = {}
             if cmd_args_json:
                 args = json.loads(cmd_args_json)
-            
+
             # --- Execute QTM internal commands based on cmd_name ---
             if cmd_name == "PrintMessage":
                 message_text = args.get("text", "No message text provided.")
@@ -120,23 +150,9 @@ class QtmCommandServicer(qtm_data_transfer_pb2_grpc.QtmTkinterBridgeServicer):
                 # Example of a command that reads QTM data
                 frame_count = qtm.gui.timeline.get_frame_count()
                 return qtm_data_transfer_pb2.Ack(message=f"Current frame count: {frame_count}", success=True)
-            elif cmd_name=="SetTrajectory":
-                payload=args
-                setTrajectory(payload["name"], payload["X"], payload["Y"], payload["Z"],
-                              payload.get("exists"), payload.get("source_start"), payload.get("target_range"))
-                return qtm_data_transfer_pb2.Ack(message=f"Set trajectory for {payload['name']}", success=True)
             elif cmd_name == "GetForcePlate":
                 payload=GetForcePlateData()
                 return qtm_data_transfer_pb2.Ack(message=json.dumps(payload), success=True)
-            elif cmd_name=="CreateModelMarker":
-                try:
-                    marker_name = args["markerName"]
-                    print(f"QTM Server: Creating model marker '{marker_name}'")
-                    marker_id = createMarker(marker_name)
-                    return qtm_data_transfer_pb2.Ack(message=f"Model marker '{marker_name}' ID={marker_id} ready", success=True)
-                except KeyError:
-                    print("QTM Server: 'markerName' argument is required for CreateModelMarker command.")
-                    return qtm_data_transfer_pb2.Ack(message="Missing 'markerName' argument.", success=False)
             elif cmd_name == "GetEvents":
                 events = getEvents()
                 return qtm_data_transfer_pb2.Ack(message=json.dumps(events), success=True)
@@ -267,7 +283,7 @@ qtm_grpc_server = None
 
 def start_qtm_grpc_server():
     global qtm_grpc_server
-    qtm_grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=5))
+    qtm_grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=5), options=[("grpc.max_receive_message_length", 64*1024*1024)])
     qtm_data_transfer_pb2_grpc.add_QtmTkinterBridgeServicer_to_server(
         QtmCommandServicer(), qtm_grpc_server
     )
@@ -627,8 +643,12 @@ def setup_my_menu():
 
 menu_priority = 1
 def add_menu():
-    global qtm_grpc_server_thread
+    global qtm_grpc_server_thread, _trajectory_dispatcher
     if have_numpy:
+        if _trajectory_dispatcher is None:
+            _trajectory_dispatcher = QTMCommandDispatcher(_execute_trajectory_command)
+        add_command(DISPATCH_COMMAND)
+        set_command_execute_function(DISPATCH_COMMAND, _trajectory_dispatcher.dispatch_one)
         add_my_commands()
         #setup_my_menu()
         

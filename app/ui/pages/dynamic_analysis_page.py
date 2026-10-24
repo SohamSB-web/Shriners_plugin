@@ -27,10 +27,12 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -48,6 +50,8 @@ from app.services.event_service import (
 from app.services.qtm_metadata_service import get_session_dynamic_trials
 from app.services.pdf_report_service import CasePresentationPdfService
 from app.services.processing_service import GaitProcessingService
+from app.services.dynamic_batch_service import DynamicBatchService, DynamicJob, parallel_file_limit
+from app.services.dynamic_write_manifest import identity
 from app.ui.dialogs.event_details_dialog import EventDetailsDialog
 from app.ui.theme.design_tokens import (
     DARK_PALETTE,
@@ -84,7 +88,7 @@ class DynamicAnalysisPage(QScrollArea):
     proceed_to_patients = Signal(str)      # session_path -> navigates to Patients & Sessions
     proceed_to_presentation = Signal(str)  # session_path (backward-compat)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None, batch_service=None, write_service=None):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setFrameShape(QScrollArea.NoFrame)
@@ -105,6 +109,10 @@ class DynamicAnalysisPage(QScrollArea):
         self._processed_success_count: int = 0
         self._processed_error_count: int = 0
         self._failed_trials: List[str] = []
+        self._batch = batch_service or DynamicBatchService(parent=QApplication.instance())
+        self._writes = write_service
+        self._staged_jobs = {}
+        self._pending_batch = None
 
         # Processing service
         self._service = GaitProcessingService()
@@ -121,6 +129,12 @@ class DynamicAnalysisPage(QScrollArea):
         self._qtm_sync_timer.timeout.connect(self._poll_qtm_events_sync)
 
         self._init_ui()
+        self._batch.changed.connect(self._refresh_batch)
+        self._batch.trial_changed.connect(self._on_batch_trial)
+        if self._writes:
+            self._writes.changed.connect(lambda _: self._refresh_batch())
+            self._writes.error.connect(self._write_status.setText)
+        self._refresh_batch()
         from app.ui.widgets.smooth_scroll import apply_smooth_scroll
         self._smooth_scroll = apply_smooth_scroll(self)
 
@@ -220,6 +234,31 @@ class DynamicAnalysisPage(QScrollArea):
         header_layout.addWidget(header_sub)
 
         self._main_layout.addLayout(header_layout)
+
+        batch_controls = QHBoxLayout()
+        batch_controls.addWidget(QLabel("Parallel Dynamic Files"))
+        self._parallel_files = QSpinBox()
+        self._parallel_files.setRange(1, parallel_file_limit())
+        self._parallel_files.setValue(min(parallel_file_limit(), max(1, int(
+            self._batch.preferences.value("processing/parallelDynamicFiles", 1)))))
+        self._parallel_files.setToolTip("Maximum dynamic files processed simultaneously, including files from the same patient")
+        batch_controls.addWidget(self._parallel_files)
+        self._parallel_files.valueChanged.connect(lambda v: self._batch.preferences.setValue("processing/parallelDynamicFiles", v))
+        self._batch_session_btn = QPushButton("Select Patient Session…")
+        self._batch_session_btn.clicked.connect(self._select_batch_session)
+        batch_controls.addWidget(self._batch_session_btn)
+        self._queue_patient_btn = QPushButton("Add Selected to Batch")
+        self._queue_patient_btn.clicked.connect(self._queue_selected_trials)
+        batch_controls.addWidget(self._queue_patient_btn)
+        self._clear_batch_btn = QPushButton("Clear Queued Trials")
+        self._clear_batch_btn.clicked.connect(self._clear_staged_trials)
+        batch_controls.addWidget(self._clear_batch_btn)
+        batch_controls.addStretch()
+        self._main_layout.addLayout(batch_controls)
+        self._batch_list = QListWidget()
+        self._batch_list.setMaximumHeight(175)
+        self._batch_list.setAccessibleName("Patient and trial processing queue")
+        self._main_layout.addWidget(self._batch_list)
 
         # ── Session Info Card ───────────────────────────────────────────────
         session_box = QFrame()
@@ -454,6 +493,23 @@ class DynamicAnalysisPage(QScrollArea):
 
         self._main_layout.addWidget(self._proc_panel)
 
+        self._write_panel = QFrame()
+        self._write_panel.setObjectName("card")
+        write_layout = QVBoxLayout(self._write_panel)
+        write_layout.setContentsMargins(SPACE_LG, SPACE_MD, SPACE_LG, SPACE_MD)
+        self._write_bar = QProgressBar()
+        self._write_bar.setRange(0, 1)
+        self._write_bar.setValue(0)
+        self._write_bar.setFixedHeight(6)
+        self._write_bar.setTextVisible(False)
+        write_layout.addWidget(self._write_bar)
+        self._write_status = QLabel("0 / 0")
+        self._write_status.setObjectName("fieldLabel")
+        self._write_status.setFont(QFont(FONT_FAMILY_MONO, FONT_SIZE_CAPTION))
+        self._write_status.setWordWrap(True)
+        write_layout.addWidget(self._write_status)
+        self._main_layout.addWidget(self._write_panel)
+
         # ── Bottom Action Row ───────────────────────────────────────────────
         action_row = QHBoxLayout()
         self._completion_label = QLabel("")
@@ -480,6 +536,13 @@ class DynamicAnalysisPage(QScrollArea):
         self._process_btn.setFont(QFont(FONT_FAMILY, FONT_SIZE_BODY, QFont.Bold))
         self._process_btn.clicked.connect(self._on_process_clicked)
         action_row.addWidget(self._process_btn)
+
+        self._write_operation_btn = QPushButton("Write Operation")
+        self._write_operation_btn.setObjectName("secondaryButton")
+        self._write_operation_btn.setEnabled(False)
+        self._write_operation_btn.setToolTip("Write named modeled trajectories sequentially into the exact QTM files and save each completed trial. Existing named samples are replaced. Save current QTM edits first.")
+        self._write_operation_btn.clicked.connect(self._on_write_operation)
+        action_row.addWidget(self._write_operation_btn)
 
         self._view_pres_btn = QPushButton("Proceed to Patients && Sessions →")
         self._view_pres_btn.setObjectName("primaryButton")
@@ -559,6 +622,8 @@ class DynamicAnalysisPage(QScrollArea):
         for button in (self._process_btn, self._auto_label_action_btn, self._auto_event_btn,
                        self._sync_qtm_btn, self._adj_fp_btn):
             button.setEnabled(False)
+        self._pending_batch = None
+        self._refresh_batch()
 
 
     def _get_session_dir(self) -> Path:
@@ -980,6 +1045,8 @@ class DynamicAnalysisPage(QScrollArea):
         """
         if getattr(self, "_is_syncing_events", False):
             return
+        if self._batch.is_running or (self._writes and self._writes.is_running):
+            return
         if not self._session_path or not self._trial_rows:
             return
         # Don't poll while an active pipeline job is executing
@@ -1123,47 +1190,138 @@ class DynamicAnalysisPage(QScrollArea):
         return True, ""
 
     def _on_process_clicked(self) -> None:
-        selected_files = [
-            fname for fname, row in self._trial_rows.items()
-            if row.is_selected
-        ]
-        if not selected_files:
+        if self._batch.is_running or self._service.is_running:
             return
+        if any(row.is_selected for row in self._trial_rows.values()):
+            if not self._queue_selected_trials():
+                return
+        jobs = list(self._staged_jobs.values())
+        if not jobs:
+            return
+        queue = []
+        if self._opt_auto_events.isChecked():
+            for job in jobs:
+                if os.path.normcase(job.session_xml) == os.path.normcase(self._session_path):
+                    row = self._trial_rows.get(job.filename)
+                    if row and (not row.events_info or row.events_info.get("total_events", 0) == 0):
+                        queue.append(("auto_event", job.filename))
+        if queue:
+            # Keep explicit event labeling in its existing workflow, before numerical workers start.
+            self._pending_batch = jobs
+            self._processing_queue = queue
+            self._proc_panel.show()
+            for button in (self._process_btn, self._queue_patient_btn, self._parallel_files,
+                           self._auto_label_action_btn, self._auto_event_btn):
+                button.setEnabled(False)
+            self._process_next_in_queue()
+        else:
+            self._start_numerical_batch(jobs)
 
+    def _queue_selected_trials(self):
+        if self._batch.is_running:
+            return False
+        selected = [name for name, row in self._trial_rows.items() if row.is_selected]
+        if not selected:
+            return False
         ready, reason = self._is_static_calibration_ready()
         if not ready:
-            QMessageBox.warning(
-                self,
-                "Static Calibration Required",
-                f"Cannot process dynamic trials:\n\n{reason}",
-            )
+            QMessageBox.warning(self, "Static Calibration Required", reason)
+            return False
+        session = Path(self._session_path).resolve()
+        for name in selected:
+            if not (session.parent / (Path(name).stem + ".c3d")).is_file():
+                QMessageBox.warning(self, "Saved C3D Required", "Export the saved C3D for " + name)
+                return False
+        for name in selected:
+            fp = self._force_plate_configs.get(name, {})
+            job = DynamicJob(identity(session.parent.parent), str(session), name,
+                             left_plate=fp.get("left_plate", "FP0"), right_plate=fp.get("right_plate", "0"),
+                             interactive_fp=self._opt_interactive_fp.isChecked())
+            self._staged_jobs[job.key] = job
+        self._refresh_batch()
+        return True
+
+    def _select_batch_session(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Select Patient Session", self._session_path,
+                                                "Session metadata (session.xml)")
+        if filename:
+            self.load_session(filename)
+
+    def _clear_staged_trials(self):
+        self._staged_jobs.clear()
+        self._refresh_batch()
+
+    def _start_numerical_batch(self, jobs):
+        try:
+            self._batch.start(jobs, self._parallel_files.value())
+        except Exception as exc:
+            QMessageBox.warning(self, "Cannot Start Processing", str(exc))
+            self._refresh_batch()
             return
+        self._staged_jobs.clear()
+        self._refresh_batch()
 
-        self._processed_success_count = 0
-        self._processed_error_count = 0
-        self._failed_trials.clear()
+    def _on_batch_trial(self, job):
+        if os.path.normcase(job.session_xml) != os.path.normcase(self._session_path):
+            return
+        row = self._trial_rows.get(job.filename)
+        if row:
+            row.set_status(job.state)
+            if job.error:
+                row.setToolTip(job.error)
+        if job.state == "COMPLETED":
+            self._view_pres_btn.show()
+            self._export_pdf_btn.show()
 
-        queue: List[Tuple[str, str]] = []
-        if self._opt_auto_events.isChecked():
-            # Automatically auto-label any selected trials that have no events yet
-            for f in selected_files:
-                row = self._trial_rows.get(f)
-                if not row or not row.events_info or row.events_info.get("total_events", 0) == 0:
-                    queue.append(("auto_event", f))
+    def _refresh_batch(self):
+        if not hasattr(self, "_batch_list"):
+            return
+        running = self._batch.is_running
+        self._batch_list.clear()
+        jobs = list(self._staged_jobs.values()) if self._staged_jobs else self._batch.jobs
+        for job in jobs:
+            session = Path(job.session_xml).parent
+            self._batch_list.addItem(f"{session.parent.name} / {session.name} / {job.filename}: {job.state.title()}"
+                                    + (f" — {job.error}" if job.state == "FAILED" else ""))
+        self._batch_list.setVisible(bool(jobs))
+        self._parallel_files.setEnabled(not running and self._pending_batch is None)
+        self._queue_patient_btn.setEnabled(not running and bool(self._session_path))
+        self._clear_batch_btn.setEnabled(not running and bool(self._staged_jobs))
+        self._process_btn.setEnabled(not running and self._pending_batch is None
+                                     and bool(self._session_path or self._staged_jobs))
+        ready = self._batch.write_ready and not self._staged_jobs and len(self._batch.jobs) <= 20
+        self._write_operation_btn.setEnabled(bool(self._writes) and ready and not self._writes.is_running)
+        history = self._writes.history if self._writes else {}
+        if self._writes and not self._writes.is_running and [t["manifest"] for t in history.get("trials", [])] != [j.manifest for j in self._batch.jobs]:
+            history = {}
+        total = history.get("total", len(self._batch.jobs))
+        self._write_bar.setRange(0, max(1, total))
+        self._write_bar.setValue(history.get("completed", 0))
+        self._write_status.setText(history.get("current") or f"0 / {total}")
+        for button in (self._auto_label_action_btn, self._auto_event_btn):
+            button.setEnabled(not running and bool(self._session_path) and self._pending_batch is None)
+        if running:
+            self._proc_panel.show()
+            completed = sum(j.state in {"COMPLETED", "FAILED", "CANCELLED"} for j in self._batch.jobs)
+            active = sum(j.state == "PROCESSING" for j in self._batch.jobs)
+            self._proc_title.setText(f"Processing {active} dynamic files simultaneously — {completed}/{len(self._batch.jobs)} finished")
+            self._proc_bar.setRange(0, len(self._batch.jobs))
+            self._proc_bar.setValue(completed)
+            self._proc_status.setText("Numerical processing only; completed GCDs are available in Patients & Sessions")
+        elif self._batch.jobs and self._pending_batch is None:
+            self._proc_panel.hide()
+            success = sum(j.state == "COMPLETED" for j in self._batch.jobs)
+            failures = sum(j.state == "FAILED" for j in self._batch.jobs)
+            cancelled = sum(j.state == "CANCELLED" for j in self._batch.jobs)
+            self._completion_label.setText(f"Numerical results: {success} completed, {failures} failed, {cancelled} cancelled. QTM writes are separate.")
 
-        for f in selected_files:
-            queue.append(("dynamic", f))
-
-        self._processing_queue = queue
-        self._proc_panel.setVisible(True)
-        self._process_btn.setEnabled(False)
-        self._auto_label_action_btn.setEnabled(False)
-        self._auto_event_btn.setEnabled(False)
-        self._completion_label.setText("")
-        self._view_pres_btn.setVisible(False)
-        self._export_pdf_btn.setVisible(False)
-
-        self._process_next_in_queue()
+    def _on_write_operation(self):
+        if self._writes and self._batch.write_ready:
+            try:
+                self._writes.prepare([job.manifest for job in self._batch.jobs])
+                self._write_operation_btn.setEnabled(False)
+            except Exception as exc:
+                self._write_status.setText(str(exc))
 
     def _on_open_force_plate_dialog(self) -> None:
         """Open Force Plate configuration dialog for selected trial."""
@@ -1203,6 +1361,10 @@ class DynamicAnalysisPage(QScrollArea):
         self._fp_badge.setText(f"Force Plate: Left={l_p}, Right={r_p}")
 
     def _process_next_in_queue(self) -> None:
+        if not self._processing_queue and self._pending_batch is not None:
+            jobs, self._pending_batch = self._pending_batch, None
+            self._start_numerical_batch(jobs)
+            return
         if not self._processing_queue:
             # All done!
             self._proc_panel.setVisible(False)
@@ -1250,7 +1412,9 @@ class DynamicAnalysisPage(QScrollArea):
 
             self._proc_title.setText(f"Auto-Labeling Gait Events: {self._current_processing_file}")
             self._proc_bar.setValue(10)
-            self._proc_status.setText("Reading marker trajectories and detecting foot strikes / toe offs...")
+            self._proc_status.setText("Preparing saved events before parallel dynamic calculations"
+                                      if self._pending_batch is not None else
+                                      "Reading marker trajectories and detecting foot strikes / toe offs...")
 
             logger.info("Starting auto event labeling for %s", self._current_processing_file)
             self._service.run_auto_event_labeling(
@@ -1293,6 +1457,12 @@ class DynamicAnalysisPage(QScrollArea):
             self._proc_status.setText(status.message)
 
     def _on_trial_finished(self, status: ProcessingStatus) -> None:
+        if self._pending_batch is not None and not (status.step == "complete" or status.completed):
+            self._pending_batch = None
+            self._processing_queue.clear()
+            self._completion_label.setText("Event labeling failed. Resolve the error before processing this batch.")
+            self._refresh_batch()
+            return
         row = self._trial_rows.get(self._current_processing_file)
         session_dir = Path(os.path.dirname(self._session_path)) if self._session_path else Path(".")
 
@@ -1330,6 +1500,9 @@ class DynamicAnalysisPage(QScrollArea):
         self._schedule(400, self._process_next_in_queue)
 
     def _on_trial_error(self, err_msg: str) -> None:
+        if self._pending_batch is not None:
+            self._pending_batch = None
+            self._processing_queue.clear()
         row = self._trial_rows.get(self._current_processing_file)
         if row:
             row.set_status("ERROR")
@@ -1341,6 +1514,10 @@ class DynamicAnalysisPage(QScrollArea):
         self._schedule(1000, self._process_next_in_queue)
 
     def _on_cancel_processing(self) -> None:
+        self._pending_batch = None
+        if self._batch.is_running:
+            self._batch.cancel()
+            return
         self._service.cancel()
         self._processing_queue.clear()
         self._proc_panel.setVisible(False)

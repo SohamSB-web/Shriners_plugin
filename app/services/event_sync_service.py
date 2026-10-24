@@ -8,7 +8,7 @@ from app.services.event_store import EventStore, EventRevisionConflict, measurem
 from app.services.qtm_event_protocol import event_signature
 
 
-def event_rpc_raw(command, args=None, port=50052):
+def event_rpc_raw(command, args=None, port=50052, timeout=3):
     from app.services.settings_service import SettingsService
     directory = SettingsService().load_app_settings().qtm_grpc_location
     if directory not in sys.path:
@@ -18,7 +18,7 @@ def event_rpc_raw(command, args=None, port=50052):
     import qtm_data_transfer_pb2_grpc as rpc
     with grpc.insecure_channel(f"localhost:{port}") as channel:
         response = rpc.QtmTkinterBridgeStub(channel).SendCommandToQtm(
-            pb.CommandToQtm(command_name=command, command_args_json=json.dumps(args or {})), timeout=3)
+            pb.CommandToQtm(command_name=command, command_args_json=json.dumps(args or {})), timeout=timeout)
     return response.success, response.message
 
 

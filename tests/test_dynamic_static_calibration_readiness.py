@@ -3,12 +3,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QApplication
 
 from app.models.data_models import ProcessingStatus
 from app.ui.pages.dynamic_analysis_page import DynamicAnalysisPage
 from test_local_calibration_workflow import app, sessions, window, choose
 from test_calibration_subfolder_validation import directory_link
+from test_anthropometric_sync import wait_for
 
 
 VALID = '# Transformation Matrices\nself.valueEPelvisAnatRelTech = [[1,0,0],[0,1,0],[0,0,1]]\n'
@@ -85,16 +86,19 @@ def test_patient_switch_requires_current_calibration_and_allows_processing(windo
     choose(window, sessions[0])
     window._on_static_to_dynamic(str(sessions[0]), 'Static 3.qtm')
     dynamic = window._dynamic_page
+    wait_for(QApplication.instance(), lambda: 'Dynamic 1.qtm' in dynamic._trial_rows)
     assert dynamic._is_static_calibration_ready() == (True, '')
     choose(window, sessions[1])
     assert dynamic._session_path == ''
     window._on_static_to_dynamic(str(sessions[1]), 'Static 3.qtm')
+    wait_for(QApplication.instance(), lambda: 'Dynamic 1.qtm' in dynamic._trial_rows)
     assert Path(dynamic._session_path) == sessions[1]
     assert not dynamic._is_static_calibration_ready()[0]
     warnings = []
     monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args[1:]))
     starts = []
-    monkeypatch.setattr(dynamic, '_process_next_in_queue', lambda: starts.append(list(dynamic._processing_queue)))
+    monkeypatch.setattr(dynamic, '_start_numerical_batch',
+                        lambda jobs: starts.append([('dynamic', job.filename) for job in jobs]))
     dynamic._opt_auto_events.setChecked(False)
     dynamic._on_process_clicked()
     assert warnings[0][0] == 'Static Calibration Required'
@@ -103,6 +107,7 @@ def test_patient_switch_requires_current_calibration_and_allows_processing(windo
     folder_b = sessions[1].parent / 'Calibration'
     folder_b.mkdir()
     (folder_b / 'Static_BF_B.py').write_text(VALID)
+    (sessions[1].parent / 'Dynamic 1.c3d').touch()  # Disposable fixture; calculations are stubbed above.
     dynamic._on_process_clicked()
     assert len(warnings) == 1
     assert starts == [[('dynamic', 'Dynamic 1.qtm')]]
@@ -114,6 +119,7 @@ def test_patient_switch_requires_current_calibration_and_allows_processing(windo
 def test_trial_completion_checks_gcd_and_schedules_next(window, sessions, monkeypatch, location, completed, success):
     dynamic = window._dynamic_page
     dynamic.load_session(str(sessions[1]))
+    wait_for(QApplication.instance(), lambda: 'Dynamic 1.qtm' in dynamic._trial_rows)
     root_gcd = sessions[1].parent / 'Dynamic 1.GCD'
     if location == 'GCD':
         folder = sessions[1].parent / 'GCD'

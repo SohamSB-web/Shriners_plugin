@@ -1497,12 +1497,12 @@ def TechCS_Trunk_Newington(C7, LCLV, RCLV, LASIS, RASIS, SACR):
     epy = math.ComputeUnitVecFromPts(RASIS, LASIS)
     ed3 = math.ComputeUnitVecFromPts(RASIS, SACR)
     epz = np.cross(epy,ed3)
-    epz = epz/np.linalg.norm(epz)
+    epz = epz/np.linalg.norm(epz, axis=-1, keepdims=True)
     epx = np.cross(epy,epz)
     
     #Determine Center of the Pelvic Cluster
-    d3 = np.linalg.norm(SACR - RASIS)
-    beta = np.arccos(np.dot(ed3,epy))
+    d3 = np.linalg.norm(SACR - RASIS, axis=-1, keepdims=True)
+    beta = np.arccos(np.sum(ed3 * epy, axis=-1, keepdims=True))
     d2 = d3 * np.sin(beta)
     
     PelvicCenterLab = (RASIS + LASIS)/2 - 0.5 * d2 * epx
@@ -1511,12 +1511,12 @@ def TechCS_Trunk_Newington(C7, LCLV, RCLV, LASIS, RASIS, SACR):
     esy = math.ComputeUnitVecFromPts(RCLV, LCLV)
     ed3 = math.ComputeUnitVecFromPts(RCLV, C7)
     esz = np.cross(esy,ed3)
-    esz = esz/np.linalg.norm(esz)
+    esz = esz/np.linalg.norm(esz, axis=-1, keepdims=True)
     esx = np.cross(esy,esz)
     
     # Determine Center of Shoulder Cluster
-    d3 = np.linalg.norm(C7 - RCLV)
-    beta = np.arccos(np.dot(ed3,esy))
+    d3 = np.linalg.norm(C7 - RCLV, axis=-1, keepdims=True)
+    beta = np.arccos(np.sum(ed3 * esy, axis=-1, keepdims=True))
     d2 = d3 * np.sin(beta)
     
     ShouldersCenterLab = (RCLV + LCLV)/2 - 0.5 * d2 * esx
@@ -1524,12 +1524,12 @@ def TechCS_Trunk_Newington(C7, LCLV, RCLV, LASIS, RASIS, SACR):
     # Compute Trunk Coordinate System
     etz = ShouldersCenterLab - PelvicCenterLab
 
-    etz = etz/np.linalg.norm(etz)
+    etz = etz/np.linalg.norm(etz, axis=-1, keepdims=True)
     etx = np.cross(esy,etz)
-    etx = etx/np.linalg.norm(etx)
+    etx = etx/np.linalg.norm(etx, axis=-1, keepdims=True)
     ety = np.cross(etz,etx)
     
-    ETrunkTech = np.column_stack((etx,ety,etz))
+    ETrunkTech = np.stack((etx,ety,etz), axis=-1)
     
     return([ETrunkTech, PelvicCenterLab, ShouldersCenterLab])
     
@@ -1539,10 +1539,10 @@ def TechCS_Pelvis_Newington(LASIS, RASIS, SACR):
     epy = math.ComputeUnitVecFromPts(RASIS, LASIS)
     ed3 = math.ComputeUnitVecFromPts(RASIS, SACR)
     epz = np.cross(epy,ed3)
-    epz = epz/np.linalg.norm(epz)
+    epz = epz/np.linalg.norm(epz, axis=-1, keepdims=True)
     epx = np.cross(epy,epz)            
     
-    EPelvisTech = np.column_stack((epx,epy,epz))
+    EPelvisTech = np.stack((epx,epy,epz), axis=-1)
     MidASISLab = (LASIS + RASIS) /2
     
     return([EPelvisTech, MidASISLab])
@@ -1553,10 +1553,10 @@ def AnatCS_Pelvis_Delp(LASIS, RASIS, SACR, PelvicTiltOffset):
     ey = math.ComputeUnitVecFromPts(RASIS, LASIS)
     ed3 = math.ComputeUnitVecFromPts(SACR,  MidASISLab)
     ez = np.cross(ed3,ey)
-    ez = ez/np.linalg.norm(ez)
+    ez = ez/np.linalg.norm(ez, axis=-1, keepdims=True)
     ex = np.cross(ey,ez)            
     
-    EPelvisAnat = np.column_stack((ex,ey,ez))
+    EPelvisAnat = np.stack((ex,ey,ez), axis=-1)
     
     # Rotate CS around Y axis by PelviTiltOffset
     EPelvisAnat = math.RotateCSaroundYaxis(EPelvisAnat,PelvicTiltOffset)
@@ -1605,26 +1605,26 @@ def JointCenterModel_Hip_Harrington(Side, ASISdist, RASIS, LASIS, SACR, EPelvisT
     
     #PelvicWidth = np.linalg.norm(LASIS-RASIS)
     PelvicWidth = ASISdist
-    PelvicDepth = np.linalg.norm((LASIS+RASIS)/2 - SACR)
+    PelvicDepth = np.linalg.norm((LASIS+RASIS)/2 - SACR, axis=-1)
     
     #define hip center relative to a pelvis coordinate syste (Origin at MidASIS)
-    HipCenterPelvis = np.array([0.,0.,0.])
+    HipCenterPelvis = np.zeros(np.shape(PelvicDepth) + (3,))
     
     # Single Linear Regression Equations
-    HipCenterPelvis[0] = -0.24 * PelvicDepth - 9.9
+    HipCenterPelvis[..., 0] = -0.24 * PelvicDepth - 9.9
     if Side == 'Right':
-        HipCenterPelvis[1] =  -0.33*PelvicWidth - 7.3
+        HipCenterPelvis[..., 1] =  -0.33*PelvicWidth - 7.3
     if Side == 'Left':
-        HipCenterPelvis[1] =  +0.33*PelvicWidth + 7.3
-    HipCenterPelvis[2] = -0.30*PelvicWidth -10.9
+        HipCenterPelvis[..., 1] =  +0.33*PelvicWidth + 7.3
+    HipCenterPelvis[..., 2] = -0.30*PelvicWidth -10.9
     
     # Two Variable Regression Equations
-#    HipCenterPelvis[0] = -0.24 * PelvicDepth - 9.9
+#    HipCenterPelvis[..., 0] = -0.24 * PelvicDepth - 9.9
 #    if Side == 'Right':
-#        HipCenterPelvis[1] =  -0.28*PelvicDepth - 0.16*PelvicWidth - 7.9
+#        HipCenterPelvis[..., 1] =  -0.28*PelvicDepth - 0.16*PelvicWidth - 7.9
 #    if Side == 'Left':
-#        HipCenterPelvis[1] =  +0.28*PelvicDepth + 0.16*PelvicWidth + 7.9
-#    HipCenterPelvis[2] = -0.16*PelvicWidth - 0.04*LongerLegLength - 7.1
+#        HipCenterPelvis[..., 1] =  +0.28*PelvicDepth + 0.16*PelvicWidth + 7.9
+#    HipCenterPelvis[..., 2] = -0.16*PelvicWidth - 0.04*LongerLegLength - 7.1
     
     
     #compute hip location relative to lab origin and expressed relative to lab coordinate system
@@ -1636,27 +1636,27 @@ def JointCenterModel_Hip_Harrington2(Side, ASISdist, LeftLegLength, RightLegLeng
     
     #PelvicWidth = np.linalg.norm(LASIS-RASIS)
     PelvicWidth = ASISdist
-    PelvicDepth = np.linalg.norm((LASIS+RASIS)/2 - SACR)
+    PelvicDepth = np.linalg.norm((LASIS+RASIS)/2 - SACR, axis=-1)
     LongerLegLength = max(LeftLegLength, RightLegLength)
     
     #define hip center relative to a pelvis coordinate syste (Origin at MidASIS)
-    HipCenterPelvis = np.array([0.,0.,0.])
+    HipCenterPelvis = np.zeros(np.shape(PelvicDepth) + (3,))
     
     # Single Linear Regression Equations
-#    HipCenterPelvis[0] = -0.24 * PelvicDepth - 9.9
+#    HipCenterPelvis[..., 0] = -0.24 * PelvicDepth - 9.9
 #    if Side == 'Right':
-#        HipCenterPelvis[1] =  -0.33*PelvicWidth - 7.3
+#        HipCenterPelvis[..., 1] =  -0.33*PelvicWidth - 7.3
 #    if Side == 'Left':
-#        HipCenterPelvis[1] =  +0.33*PelvicWidth + 7.3
-#    HipCenterPelvis[2] = -0.30*PelvicWidth -10.9
+#        HipCenterPelvis[..., 1] =  +0.33*PelvicWidth + 7.3
+#    HipCenterPelvis[..., 2] = -0.30*PelvicWidth -10.9
     
     # Two Variable Regression Equations
-    HipCenterPelvis[0] = -0.24 * PelvicDepth - 9.9
+    HipCenterPelvis[..., 0] = -0.24 * PelvicDepth - 9.9
     if Side == 'Right':
-        HipCenterPelvis[1] =  -0.28*PelvicDepth - 0.16*PelvicWidth - 7.9
+        HipCenterPelvis[..., 1] =  -0.28*PelvicDepth - 0.16*PelvicWidth - 7.9
     if Side == 'Left':
-        HipCenterPelvis[1] =  +0.28*PelvicDepth + 0.16*PelvicWidth + 7.9
-    HipCenterPelvis[2] = -0.16*PelvicWidth - 0.04*LongerLegLength - 7.1
+        HipCenterPelvis[..., 1] =  +0.28*PelvicDepth + 0.16*PelvicWidth + 7.9
+    HipCenterPelvis[..., 2] = -0.16*PelvicWidth - 0.04*LongerLegLength - 7.1
     
     
     #compute hip location relative to lab origin and expressed relative to lab coordinate system
@@ -1700,16 +1700,16 @@ def TechCS_Thigh_Newington(Side, HipCenter, ThighMarker, VirtualKneeMarker):
     
     if Side == 'Right':
         ethx = np.cross(ethz, R1)
-        ethx = ethx /np.linalg.norm(ethx)
+        ethx = ethx /np.linalg.norm(ethx, axis=-1, keepdims=True)
     if Side == 'Left':
         ethx = np.cross(R1, ethz)
-        ethx = ethx /np.linalg.norm(ethx)
+        ethx = ethx /np.linalg.norm(ethx, axis=-1, keepdims=True)
     
     ethy = np.cross(ethz, ethx)
     
-    EThighTech = np.column_stack((ethx,ethy,ethz))
+    EThighTech = np.stack((ethx,ethy,ethz), axis=-1)
     
-    return EThighTech    
+    return EThighTech
 
 def JointCenterModel_Knee_Newington(Side, MarkerDiameter, KneeWidth, VirtualKneeMarker, LateralKADMarker):
     
@@ -1727,10 +1727,10 @@ def TechCS_Shank_Newington(Side, KneeCenter, TibialMarker, LateralAnkle):
         esx = np.cross(esz, R1)
     if Side == 'Left':
         esx = np.cross(R1, esz)
-    esx = esx /np.linalg.norm(esx)
+    esx = esx /np.linalg.norm(esx, axis=-1, keepdims=True)
     esy = np.cross(esz, esx)
     
-    EShankTech = np.column_stack((esx,esy,esz))
+    EShankTech = np.stack((esx,esy,esz), axis=-1)
     
     return EShankTech
 
@@ -1784,11 +1784,11 @@ def TechCS_Foot_Newington(Side, KneeCenterLab, AnkleCenterLab, ToeMarker):
     eztemp = math.ComputeUnitVecFromPts(AnkleCenterLab, KneeCenterLab)
     ex = math.ComputeUnitVecFromPts(AnkleCenterLab, ToeMarker)
     ey = np.cross(eztemp,ex)
-    ey = ey/ np.linalg.norm(ey)
+    ey = ey/ np.linalg.norm(ey, axis=-1, keepdims=True)
     ez = np.cross(ex,ey)
-    ez = ez/ np.linalg.norm(ez)
+    ez = ez/ np.linalg.norm(ez, axis=-1, keepdims=True)
     
-    EFootTech = np.column_stack((ex,ey,ez))
+    EFootTech = np.stack((ex,ey,ez), axis=-1)
     
     return EFootTech
 
@@ -1854,10 +1854,10 @@ def AnatCS_Shank_Proximal_Newington(Side, KneeCenterLab, VirtualKneeMarkerLab, A
     if Side == 'Right':
         ex = np.cross(ez, R1)
     
-    ex = ex/ np.linalg.norm(ex)
+    ex = ex/ np.linalg.norm(ex, axis=-1, keepdims=True)
     ey = np.cross(ez,ex) 
     
-    EShankProximalAnat = np.column_stack((ex,ey,ez))
+    EShankProximalAnat = np.stack((ex,ey,ez), axis=-1)
     
     return EShankProximalAnat
 
@@ -1871,10 +1871,10 @@ def AnatCS_Shank_Distal_VCM(Side, KneeCenterLab, AnkleCenterLab, LateralAnkleMar
         R1 = math.ComputeUnitVecFromPts(LateralAnkleMarker, AnkleCenterLab)
     
     ex = np.cross(R1, ez)
-    ex = ex/ np.linalg.norm(ex)
+    ex = ex/ np.linalg.norm(ex, axis=-1, keepdims=True)
     ey = np.cross(ez,ex) 
     
-    EShankDistalAnat = np.column_stack((ex,ey,ez))
+    EShankDistalAnat = np.stack((ex,ey,ez), axis=-1)
     
     return EShankDistalAnat
 
@@ -2000,10 +2000,10 @@ def TechCS_Hindfoot_mSHCG(Side, LateralCalcaneusMarker, MedialCalcaneusMarker, H
         R1 = math.ComputeUnitVecFromPts(LateralCalcaneusMarker, MedialCalcaneusMarker)
     
     ez = np.cross(ex,R1)
-    ez = ez/ np.linalg.norm(ez)
+    ez = ez/ np.linalg.norm(ez, axis=-1, keepdims=True)
     ey = np.cross(ez,ex)
     
-    EHindfootTech = np.column_stack((ex,ey,ez))
+    EHindfootTech = np.stack((ex,ey,ez), axis=-1)
     
     return EHindfootTech
 
@@ -2017,10 +2017,10 @@ def TechCS_Forefoot_mSHCG(Side, MT1B, MT1H, MT5H):
         R1 = math.ComputeUnitVecFromPts(MT5H, MT1H)
     
     ez = np.cross(ex,R1)
-    ez = ez/ np.linalg.norm(ez)
+    ez = ez/ np.linalg.norm(ez, axis=-1, keepdims=True)
     ey = np.cross(ez,ex)
     
-    EForefootTech = np.column_stack((ex,ey,ez))
+    EForefootTech = np.stack((ex,ey,ez), axis=-1)
     return EForefootTech
 
 def TechCS_Hallux_mSHCG(Side, HLX, MTP1, TOE):
@@ -2033,12 +2033,12 @@ def TechCS_Hallux_mSHCG(Side, HLX, MTP1, TOE):
         R1 = math.ComputeUnitVecFromPts(TOE, MTP1)
     
     ez = np.cross(ex,R1)
-    ez = ez/ np.linalg.norm(ez)
+    ez = ez/ np.linalg.norm(ez, axis=-1, keepdims=True)
     ey = np.cross(ez,ex)
     
-    EHalluxTech = np.column_stack((ex,ey,ez))
+    EHalluxTech = np.stack((ex,ey,ez), axis=-1)
     
-    return EHalluxTech        
+    return EHalluxTech
     
 def AnatCS_Hindfoot_mSHCG(Side, LCAL, MCAL, HEEL, CALPT, 
                           HindfootVarus, CalcanealPitch, HindfootProgression, HindFootValgusIsNegative):
