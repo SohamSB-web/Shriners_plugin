@@ -1142,7 +1142,10 @@ class StaticAnalysisPage(QScrollArea):
         try:
             root = ET.parse(path).getroot()
             if root.find("Fields") is None or (root.tag != "Session" and root.get("Type") != "Session"):
-                raise ValueError("Expected a session XML containing Fields.")
+                raise ValueError(
+                    f"'{path.name}' is not a QTM session.xml. Select the session.xml in the session folder "
+                    "(if it is missing, run the analysis on the session in QTM first)."
+                )
         except (OSError, ET.ParseError, ValueError) as error:
             self._anthro_status(f"Could not load calibration XML: {error}", error=True)
             return
@@ -1279,7 +1282,7 @@ class StaticAnalysisPage(QScrollArea):
 
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Static Calibration Trial",
+            "Select static C3D or session.xml",
             start_dir or "",
             "Static calibration (*.c3d *.xml);;C3D Files (*.c3d);;XML Files (*.xml)"
         )

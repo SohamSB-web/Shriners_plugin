@@ -16,13 +16,14 @@ Filename filter: \.(qtm)$
 Types:
   Subject:
     Participant:
-      Fields: []
+      Fields: [ID, Name, DOB, Height, BodyMass, Sex]
+      Display order: [ID, Name, DOB, Height, BodyMass, Sex, Comments]
       Children: [Session]
       Directory pattern: $Name$_$ID$
 
   Session:
     Session:
-      Fields: [Session ID, Operator,ID, Name, Sex, DOB, Height, BodyMass, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance]
+      Fields: [Session ID, Operator, InterAsisDistance, LeftLegLength, RightLegLength, LeftKneeWidth, RightKneeWidth, LeftAnkleWidth, RightAnkleWidth, LeftAsisTrocanterDistance, RightAsisTrocanterDistance]
       Measurements: [Static, Dynamic]
       Analyses: [Shriner Static]
       Display order: [Session ID, Operator, Comments]
@@ -68,6 +69,7 @@ Fields:
     Force: Yes
   DOB:
     Type: Date
+    Readonly: No
     Inherit: Connect
   Creation date:
     Type: Date

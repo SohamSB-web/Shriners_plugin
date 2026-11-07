@@ -229,7 +229,7 @@ def test_browse_accepts_only_valid_session_xml(app, tmp_path, monkeypatch, exten
     args = []
     monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *a: args.append(a) or (str(path), 'XML Files (*.xml)'))
     widget._browse_static_file()
-    assert args[0][3] == 'XML Files (*.xml)'
+    assert args[0][3] == 'Static calibration (*.c3d *.xml);;C3D Files (*.c3d);;XML Files (*.xml)'
     assert bool(widget._session_path) == accepted
     if not accepted:
         assert not widget._save_btn.isEnabled()
