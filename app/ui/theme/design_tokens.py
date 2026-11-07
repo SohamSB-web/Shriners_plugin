@@ -132,8 +132,8 @@ class ColorPalette:
     # Borders
     border_light: str = "#F1F5F9"
     border_focus: str = "#14B8A6"
-    border_input: str = "#A7F3D0"        # Very light pastel green matching UI theme
-    border_input_hover: str = "#5EEAD4"  # Soft mint teal on hover
+    border_input: str = "#B4BFCD"        # Between Slate 300 and 400
+    border_input_hover: str = "#94A3B8"  # Slate 400
 
     # Status
     success: str = "#22C55E"
@@ -224,8 +224,8 @@ DARK_PALETTE = ColorPalette(
     motion_light="#083344",
     border_light="#1E293B",
     border_focus="#14B8A6",
-    border_input="#134E4A",
-    border_input_hover="#2DD4BF",
+    border_input="#64748B",
+    border_input_hover="#94A3B8",
     success="#22C55E",
     success_bg="#052E16",
     warning_bg="#451A03",

@@ -268,7 +268,7 @@ QLineEdit:focus {{
 QLineEdit:disabled {{
     background-color: {palette.bg_surface_hover};
     color: {palette.text_muted};
-    border-color: {palette.border};
+    border-color: {palette.border_input};
 }}
 QLineEdit#searchBar {{
     padding-left: {SPACE_XL}px;
@@ -307,6 +307,9 @@ QComboBox:hover {{
 }}
 QComboBox:focus {{
     border: 1.5px solid {palette.border_focus};
+}}
+QComboBox:disabled {{
+    border-color: {palette.border_input};
 }}
 QComboBox::drop-down {{
     border: none;
