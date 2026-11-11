@@ -1133,6 +1133,26 @@ class StaticAnalysisPage(QScrollArea):
 
 
 
+    @staticmethod
+    def _read_session_xml(path: str | Path) -> tuple[ET.Element, dict[str, str]]:
+        root = ET.parse(path).getroot()
+        session = root
+        if root.tag == "Subject":
+            sessions = root.findall(".//Session")
+            session = sessions[0] if len(sessions) == 1 else None
+        if (session is None or (session.tag != "Session" and session.get("Type") != "Session")
+                or session.find("Fields") is None):
+            raise ValueError(f"'{Path(path).name}' must contain one QTM Session with a Fields section.")
+
+        # QTM can put participant fields on Subject and session fields on Session.
+        fields = {}
+        for node in (root, session) if root is not session else (session,):
+            for field in node.findall("Fields/*"):
+                value = (field.text or "").strip()
+                if value:
+                    fields[field.tag] = value
+        return session, fields
+
     def set_session(self, session_path: str, filename: str | None = None) -> None:
         """Load an explicitly chosen session; results require fresh processing."""
         path = Path(session_path).resolve()
@@ -1140,12 +1160,7 @@ class StaticAnalysisPage(QScrollArea):
             self._anthro_status("Choose an XML calibration/session file.", error=True)
             return
         try:
-            root = ET.parse(path).getroot()
-            if root.find("Fields") is None or (root.tag != "Session" and root.get("Type") != "Session"):
-                raise ValueError(
-                    f"'{path.name}' is not a QTM session.xml. Select the session.xml in the session folder "
-                    "(if it is missing, run the analysis on the session in QTM first)."
-                )
+            self._read_session_xml(path)
         except (OSError, ET.ParseError, ValueError) as error:
             self._anthro_status(f"Could not load calibration XML: {error}", error=True)
             return
@@ -1241,13 +1256,16 @@ class StaticAnalysisPage(QScrollArea):
             return
         if not self._filename:
             try:
-                root = ET.parse(path).getroot()
-                self._filename = next((m.get("Filename", "") for m in root.findall(".//Measurement")
-                    if "static" in m.get("Filename", "").lower()), "")
+                session, _ = self._read_session_xml(path)
+                self._filename = next((m.get("Filename") for m in session.iter("Measurement")
+                    if m.get("Filename") and m.get("Type", "").lower() == "static"), "")
+                if not self._filename:
+                    self._filename = next((m.get("Filename", "") for m in session.iter("Measurement")
+                        if not m.get("Type") and "static" in m.get("Filename", "").lower()), "")
                 if not self._filename:
                     self._filename = next((p.name for p in sorted(path.parent.iterdir())
                         if p.stem.lower().startswith("static") and p.suffix.lower() in {".qtm", ".c3d"}), "")
-            except (OSError, ET.ParseError) as error:
+            except (OSError, ET.ParseError, ValueError) as error:
                 self._anthro_status(f"Could not load calibration XML: {error}", error=True)
                 return
         self._static_file_display.setText(self._filename or "—")
@@ -1291,7 +1309,8 @@ class StaticAnalysisPage(QScrollArea):
             if selected.suffix.lower() == '.c3d':
                 xml = selected.with_name('session.xml')
                 try:
-                    matches = [m for m in ET.parse(xml).getroot().iter('Measurement')
+                    session, _ = self._read_session_xml(xml)
+                    matches = [m for m in session.iter('Measurement')
                                if Path(m.get('Filename', '')).stem == selected.stem]
                     if len(matches) != 1:
                         raise ValueError('The selected C3D must match exactly one measurement in its session.xml.')
@@ -1372,13 +1391,7 @@ class StaticAnalysisPage(QScrollArea):
             sess_xml_path = Path(self._session_path)
             if sess_xml_path.is_file():
                 try:
-                    tree = ET.parse(str(sess_xml_path))
-                    root = tree.getroot()
-                    f_elem = root.find("Fields")
-                    if f_elem is not None:
-                        for child in f_elem:
-                            if child.text:
-                                xml_data[child.tag] = child.text.strip()
+                    _, xml_data = self._read_session_xml(sess_xml_path)
                     # Patient/session fields are distinct from per-measurement export snapshots.
                 except Exception as e:
                     logger.warning("Error reading session.xml: %s", e)
@@ -1916,11 +1929,11 @@ class StaticAnalysisPage(QScrollArea):
                     "measurement": self._filename, "session_xml": self._session_path}
         if self._session_path:
             try:
-                root = ET.parse(self._session_path).getroot()
-                identity["xml_metadata"] = {"attributes": root.attrib, "fields": {
-                    name: root.findtext("Fields/" + name) for name in
+                session, fields = self._read_session_xml(self._session_path)
+                identity["xml_metadata"] = {"attributes": session.attrib, "fields": {
+                    name: fields.get(name) for name in
                     ("Name", "ID", "Sex", "DOB", "Session_ID", "BodyMass", "Height")}}
-            except (OSError, ET.ParseError) as error:
+            except (OSError, ET.ParseError, ValueError) as error:
                 identity["xml_error"] = str(error)
         return identity
 
@@ -2042,7 +2055,7 @@ class StaticAnalysisPage(QScrollArea):
             return None
         session_dir = Path(self._session_path).resolve().parent
         try:
-            root = ET.parse(self._session_path).getroot()
+            _, xml_data = self._read_session_xml(self._session_path)
             for name, widget in self._anthro_widgets.items():
                 validate_parameter(name, widget.text().strip())
             for name in self._patient_widgets:
@@ -2069,7 +2082,7 @@ class StaticAnalysisPage(QScrollArea):
         last_name = self._last_name.text().strip()
         patient_number = self._patient_number.text().strip()
         # The export's subject identity names the processing file, independently of edited display values.
-        source_name = root.findtext("Fields/Name") or session_dir.parent.name
+        source_name = xml_data.get("Name") or session_dir.parent.name
         subject_name = "".join("_" if char in '<>:"/\\|?*' else char for char in source_name)
         if subject_name in {"", ".", ".."}:
             self._anthro_status("Parameters not saved — invalid calibration identity.", error=True)
