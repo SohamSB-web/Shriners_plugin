@@ -40,6 +40,9 @@ def extract_c3d(c3dfile, is_static):
         evt_group = reader["parameters"].get("EVENT", {})
         evt_label = evt_group["LABELS"]["value"] if "LABELS" in evt_group else []
         evt_times = evt_group["TIMES"]["value"] if "TIMES" in evt_group else [[], []]
+        used = int(evt_group.get("USED", {}).get("value", [len(evt_label)])[0])
+        evt_label = evt_label[:used]
+        evt_times = [row[:len(evt_label)] for row in evt_times]
         # Event times are absolute (relative to the start of the original,
         # uncropped recording), but the point/marker arrays extracted below
         # are indexed relative to this c3d's own crop start. Subtract
@@ -57,29 +60,14 @@ def extract_c3d(c3dfile, is_static):
             for minutes, seconds in zip(evt_times[0], evt_times[1])
         ]
         tmp = defaultdict(lambda: {"FrameNo": [], "EventOffset": []})
-        if "CONTEXTS" in evt_group:
-            evt_contexts = evt_group["CONTEXTS"]["value"]
-            ctx_map={
-                "Right":{
-                    "Foot Strike":"RSTRIKE",
-                    "Foot Off":"ROFF"
-                },
-                "Left":{
-                    "Foot Strike":"LSTRIKE",
-                    "Foot Off":"LOFF"
-                }
-            }
-            for label, frame, off, context in zip(
-                evt_label, evt_frames, evt_offsets, evt_contexts
-            ):
-                tmp[ctx_map.get(context,{}).get(label,label)]["FrameNo"].append(frame)
-                tmp[ctx_map.get(context,{}).get(label,label)]["EventOffset"].append(off)
-
-        else:
-
-            for label, frame, off in zip(evt_label, evt_frames, evt_offsets):
-                tmp[label]["FrameNo"].append(frame)
-                tmp[label]["EventOffset"].append(off)
+        from app.services.qtm_event_protocol import event_label
+        contexts = evt_group.get("CONTEXTS", {}).get("value", [])
+        for i, (label, frame, off) in enumerate(zip(evt_label, evt_frames, evt_offsets)):
+            if label in ("Foot Strike", "Foot Off") and i < len(contexts):
+                label = f"{contexts[i]} {label}"
+            key = event_label(label)
+            tmp[key]["FrameNo"].append(frame)
+            tmp[key]["EventOffset"].append(off)
 
         fields["EVENTS"] = tmp
         if evt_frames:
@@ -124,8 +112,8 @@ def extract_c3d(c3dfile, is_static):
                                 rel_f = int(rel_f)
                             # Py3_CreateGCD expects 1-based frames (Strike1 - 1 : Strike2):
                             frame_1based = rel_f + 1
-                            tmp_json[lbl]["FrameNo"].append(frame_1based)
-                            tmp_json[lbl]["EventOffset"].append(0.0)
+                            tmp_json[event_label(lbl)]["FrameNo"].append(frame_1based)
+                            tmp_json[event_label(lbl)]["EventOffset"].append(0.0)
                             all_ev_frames.append(rel_f)
 
                         fields["EVENTS"] = tmp_json
@@ -239,12 +227,9 @@ def extract_c3d(c3dfile, is_static):
         fields[val]["Exists"] = []
         for i, channel in enumerate(channels):
             fields[val][channel[0]] = reader["data"]["points"][i][inx] * channel[1]
-        fields[val]["Exists"] = [
-        not (np.isnan(fields[val]["X"][j]) or
-             np.isnan(fields[val]["Y"][j]) or
-             np.isnan(fields[val]["Z"][j]))
-        for j in range(len(fields[val]["X"]))
-        ]
+        coordinates = reader["data"]["points"][:3, inx]
+        residual = reader["data"]["meta_points"]["residuals"][0, inx]
+        fields[val]["Exists"] = (np.isfinite(coordinates).all(axis=0) & (residual >= 0)).tolist()
         #print(val,fields[val]["Exists"][:10])
     #print(fields.keys())
 

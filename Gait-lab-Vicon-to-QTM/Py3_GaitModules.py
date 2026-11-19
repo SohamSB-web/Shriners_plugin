@@ -111,32 +111,20 @@ def compute_forceplate_valid_zone(fp_data, marker_frame_rate,
     active : bool
         True if at least one force plate was active above threshold.
     """
-    first_analog = None
-    last_analog = None
-    analog_rate = None
-
-    for fp_key, fp in fp_data.items():
+    ranges = []
+    for fp in fp_data.values():
+        rate = fp.get("Frequency", marker_frame_rate)
+        if not rate or rate <= 0:
+            continue
         fz = np.asarray(fp["Force"]["Z"], dtype=float)
-        fp_freq = fp.get("Frequency", marker_frame_rate)
-        analog_rate = fp_freq
-
-        active_indices = np.where(np.abs(fz) > fz_threshold)[0]
-
-        if len(active_indices) > 0:
-            if first_analog is None or active_indices[0] < first_analog:
-                first_analog = int(active_indices[0])
-            if last_analog is None or active_indices[-1] > last_analog:
-                last_analog = int(active_indices[-1])
-
-    if first_analog is None:
-        print("[GaitEvents] No force plate activity detected above "
-              f"{fz_threshold} N threshold.")
+        active = np.flatnonzero(np.isfinite(fz) & (np.abs(fz) > fz_threshold))
+        if active.size:
+            ranges.append((int(active[0] * marker_frame_rate / rate),
+                           int(active[-1] * marker_frame_rate / rate)))
+    if not ranges:
         return 0, 0, False
-
-    # Convert analog frames → video frames
-    ratio = analog_rate / marker_frame_rate if analog_rate else 1.0
-    first_video = int(first_analog / ratio)
-    last_video = int(last_analog / ratio)
+    first_video = min(first for first, last in ranges)
+    last_video = max(last for first, last in ranges)
 
     # Apply buffer (post may default to pre)
     if buffer_post is None:
@@ -146,10 +134,7 @@ def compute_forceplate_valid_zone(fp_data, marker_frame_rate,
 
     print(f"[GaitEvents] Force Plate Zone defined as: video frames "
           f"{zone_start} to {zone_end}  "
-          f"(active Fz: analog [{first_analog}-{last_analog}], "
-          f"video [{first_video}-{last_video}], "
-          f"buffer_pre={buffer_pre}, buffer_post={buffer_post}, "
-          f"analog rate={analog_rate} Hz, video rate={marker_frame_rate} Hz)")
+          f"(active frames {first_video} to {last_video} at {marker_frame_rate} Hz)")
 
     return zone_start, zone_end, True
 
@@ -254,9 +239,6 @@ def detect_gait_events(
     Returns a dict with keys ``"hs_frames"`` and ``"to_frames"`` containing
     frame indices of detected heel-strike and toe-off events respectively.
 
-    If the initial detection yields 0 TO events while HS > 0, the detector
-    automatically re-runs with progressively relaxed prominence until TO events
-    are found (independent relaxation for HS and TO).
     """
     heel_ap = np.asarray(trajectory_data.get("heel_ap", []), dtype=float)
     toe_ap  = np.asarray(trajectory_data.get("toe_ap", []), dtype=float)
@@ -285,52 +267,6 @@ def detect_gait_events(
         _logger.error(f"[STAGE 4] ERROR running Zeni algorithm: {e}")
         hs_raw, to_raw = [], []
 
-    # ---- Independent relaxation for HS when count is low ---------------------
-    if len(hs_raw) < 2:
-        scale = 0.5
-        while len(hs_raw) < 2 and scale >= 0.1:
-            relaxed_p = max(PEAK_PROMINENCE * scale, MIN_PROMINENCE_FLOOR)
-            _logger.info(f"[STAGE 4] WARNING: R/L_HS detected {len(hs_raw)} events. "
-                         f"Relaxing prominence to {relaxed_p:.1f}...")
-            try:
-                hs_retry, _ = _zeni_detect_gait_events(
-                    heel_ap, toe_ap, sacrum_ap,
-                    heel_exists, toe_exists, sacrum_exists,
-                    frame_rate, 0, n_frames, 'auto',
-                    trajectory_data.get('heel_xyz'),
-                    trajectory_data.get('toe_xyz'),
-                    trajectory_data.get('sacrum_xyz'),
-                    min_stride_time=MIN_STRIDE_TIME_S * scale,
-                    peak_prominence=relaxed_p,
-                )
-                hs_raw = sorted(set(hs_raw) | set(hs_retry))
-            except Exception:
-                pass
-            scale /= 2
-
-    # ---- Independent relaxation for TO when count is low ---------------------
-    if len(to_raw) < 2:
-        scale = 0.5
-        while len(to_raw) < 2 and scale >= 0.1:
-            relaxed_p = max(PEAK_PROMINENCE * scale, MIN_PROMINENCE_FLOOR)
-            _logger.info(f"[STAGE 4] WARNING: R/L_TO detected {len(to_raw)} events. "
-                         f"Relaxing prominence to {relaxed_p:.1f}...")
-            try:
-                _, to_retry = _zeni_detect_gait_events(
-                    heel_ap, toe_ap, sacrum_ap,
-                    heel_exists, toe_exists, sacrum_exists,
-                    frame_rate, 0, n_frames, 'auto',
-                    trajectory_data.get('heel_xyz'),
-                    trajectory_data.get('toe_xyz'),
-                    trajectory_data.get('sacrum_xyz'),
-                    min_stride_time=MIN_STRIDE_TIME_S * scale,
-                    peak_prominence=relaxed_p,
-                )
-                to_raw = sorted(set(to_raw) | set(to_retry))
-            except Exception:
-                pass
-            scale /= 2
-
     return {"hs_frames": sorted(hs_raw), "to_frames": sorted(to_raw)}
 
 
@@ -340,57 +276,19 @@ def detect_gait_events(
 
 def pair_strike_to_off(hs_frames, to_frames, label_hs, label_to,
                        zone_end, frame_rate):
-    """For every Heel Strike, find the FIRST Toe Off that occurs AFTER it.
+    """Pair a strike with its sole observed toe-off before the next strike.
 
     Both events in a pair are written together or not at all.
     Unmatched TOs (no preceding strike) are discarded.
     """
     paired_events = []
-    available_tos = sorted(to_frames)  # mutable copy — consumed as we match
-    synthetic_count = 0
-
-    for hs_frame in sorted(hs_frames):
-        # Find the first TO that comes AFTER this HS
-        matched_to = None
-        for to_frame in sorted(available_tos):
-            if to_frame > hs_frame:
-                matched_to = to_frame
-                available_tos.remove(to_frame)
-                break
-
-        if matched_to is None:
-            # No real TO found — create synthetic
-            synthetic_frame = hs_frame + max(1, int(frame_rate * SYNTHETIC_TO_OFFSET_S))
-            if zone_end is not None:
-                synthetic_frame = min(synthetic_frame, zone_end)
-            matched_to = synthetic_frame
-            synthetic_count += 1
-            _logger.warning(f"[STAGE 5] WARNING: Synthetic {label_to} created at "
-                            f"frame {synthetic_frame} (no real TO after {label_hs} at {hs_frame})")
-
-        # Apply global frame offset
-        matched_to += TOE_OFF_FRAME_OFFSET
-
-        # Write BOTH events as a guaranteed pair
-        paired_events.append((hs_frame, label_hs))
-        paired_events.append((matched_to, label_to))
-
-    # Any remaining unmatched TOs are DISCARDED (no preceding strike)
-    if available_tos:
-        _logger.warning(f"[STAGE 5] WARNING: {len(available_tos)} unmatched TO events "
-                        f"discarded (no preceding strike): frames {available_tos}")
-
-    side_name = 'Right' if 'R' in label_hs else 'Left'
-    _logger.info(f"[STAGE 5] Pairing — {side_name}: {len(hs_frames)} strikes paired, "
-                 f"{synthetic_count} synthetic")
-
-    n_pairs = len(paired_events) // 2
-    if n_pairs < 2:
-        print(f"[STAGE 5] WARNING: Only {n_pairs} pair(s) produced for {side_name} side. "
-              f"Target is 2 pairs. Check MIN_STRIDE_TIME_S and PEAK_PROMINENCE settings.")
-    else:
-        print(f"[STAGE 5] {side_name} side: {n_pairs} pairs confirmed ")
-
+    strikes = sorted(set(hs_frames))
+    offs = sorted(set(to_frames))
+    for i, strike in enumerate(strikes):
+        following = strikes[i + 1] if i + 1 < len(strikes) else float("inf")
+        candidates = [off for off in offs if strike < off < following]
+        if len(candidates) == 1:
+            paired_events.extend([(strike, label_hs), (candidates[0], label_to)])
     return sorted(paired_events, key=lambda x: x[0])
 
 
@@ -1098,7 +996,12 @@ def _zeni_detect_gait_events(
         print(f"[GaitEvents] WARNING — TO detection failed: {e}")
 
     print(f"[GaitEvents] Detected {len(hs_frames)} Heel Strikes, {len(to_frames)} Toe Offs")
-    return hs_frames, to_frames
+    margin = win - 1 if lowpass_cutoff > 0 and frame_rate > 0 else 1
+    def observed(frame, mask):
+        return (start_frame + margin <= frame < end_frame - margin
+                and mask[frame-margin:frame+margin+1].all())
+    return ([f for f in hs_frames if observed(f, valid_hs)],
+            [f for f in to_frames if observed(f, valid_to)])
 
 
 def detect_bilateral_gait_events(
@@ -1140,19 +1043,19 @@ def detect_bilateral_gait_events(
             return m['X'], m['Y'], m['Z'], m['Exists']
         # Fallback: search fields directly for standard clinical aliases
         aliases = {
-            'L_HEEL': ['left_heel', 'l_heel', 'lheel', 'l_fcc', 'l_calc', 'l_foot_heel', 'lhee'],
-            'R_HEEL': ['right_heel', 'r_heel', 'rheel', 'r_fcc', 'r_calc', 'r_foot_heel', 'rhee'],
+            'L_HEEL': ['left_posterior_calcaneus', 'left_heel', 'l_heel', 'lheel', 'l_fcc', 'l_calc', 'l_foot_heel', 'lhee'],
+            'R_HEEL': ['right_posterior_calcaneus', 'right_heel', 'r_heel', 'rheel', 'r_fcc', 'r_calc', 'r_foot_heel', 'rhee'],
             'L_TOE': ['left_toe', 'l_toe', 'ltoe', 'left_2nd3rd_mt_head', 'l_2nd3rd', 'l_fm1', 'l_fm2', 'l_foot_toe', 'l_mt2'],
             'R_TOE': ['right_toe', 'r_toe', 'rtoe', 'right_2nd3rd_mt_head', 'r_2nd3rd', 'r_fm1', 'r_fm2', 'r_foot_toe', 'r_mt2'],
             'SACRUM': ['sacrum', 'sacr'],
         }
-        cand_subs = aliases.get(name_key, [])
-        for k in fields.keys():
-            kl = k.lower()
-            if any(sub in kl for sub in cand_subs):
-                m = fields[k]
-                if isinstance(m, dict) and 'X' in m and 'Exists' in m:
-                    return m['X'], m['Y'], m['Z'], m['Exists']
+        available = {key.rsplit(":", 1)[-1].casefold(): marker
+                     for key, marker in fields.items()
+                     if isinstance(marker, dict) and "X" in marker and "Exists" in marker}
+        for alias in aliases.get(name_key, []):
+            if alias in available:
+                m = available[alias]
+                return m['X'], m['Y'], m['Z'], m['Exists']
         return None, None, None, None
 
     # Sacrum (shared between sides)
@@ -1178,10 +1081,10 @@ def detect_bilateral_gait_events(
 
     # ---- Determine AP axis from sacrum travel ---------------------------------
     resolved_ap = ap_axis
+    ef = end_frame if end_frame is not None else len(sacr_x)
     if ap_axis == 'auto':
         sx = np.asarray(sacr_x, dtype=float)
         sy = np.asarray(sacr_y, dtype=float)
-        ef = end_frame if end_frame else len(sx)
         range_x = np.nanmax(sx[start_frame:ef]) - np.nanmin(sx[start_frame:ef])
         range_y = np.nanmax(sy[start_frame:ef]) - np.nanmin(sy[start_frame:ef])
         resolved_ap = 'X' if range_x > range_y else 'Y'
@@ -1260,7 +1163,7 @@ def detect_bilateral_gait_events(
             zone_start, zone_end, active_zone = compute_forceplate_valid_zone(
                 fp_data, frame_rate,
                 buffer_pre=pre, buffer_post=post,
-                fz_threshold=FZ_THRESHOLD_N,
+                fz_threshold=fp_fz_threshold,
             )
             _logger.info(f"[STAGE 3] Force plate method: temporal")
             _logger.info(f"[STAGE 3] Zone: frames {zone_start} to {zone_end} "
@@ -1333,7 +1236,6 @@ def detect_bilateral_gait_events(
     # STAGE 4 — Raw Zeni detection (per side, independent)
     # ======================================================================
     raw = {}  # {'L': {'hs': [...], 'to': [...]}, 'R': {...}}
-    traj_data = {}  # store trajectory dicts for enforcement
     for side, heel_key, toe_key in [('L', 'L_HEEL', 'L_TOE'),
                                      ('R', 'R_HEEL', 'R_TOE')]:
         traj = _build_traj(heel_key, toe_key)
@@ -1342,23 +1244,9 @@ def detect_bilateral_gait_events(
             raw[side] = {'hs': [], 'to': []}
             continue
 
-        traj_data[side] = traj
         _logger.info(f"[STAGE 4] Running Zeni on {side} side...")
         res = detect_gait_events(traj, frame_rate)
         raw[side] = {'hs': res['hs_frames'], 'to': res['to_frames']}
-
-    # ---- Enforce minimum 2 detections per side per type within zone ----------
-    if active_zone:
-        for side in ['R', 'L']:
-            if side not in traj_data:
-                continue
-            side_label = 'Right' if side == 'R' else 'Left'
-            raw[side]['hs'] = enforce_minimum_detections(
-                raw[side]['hs'], traj_data[side], frame_rate,
-                zone_start, zone_end, 'HS', side_label)
-            raw[side]['to'] = enforce_minimum_detections(
-                raw[side]['to'], traj_data[side], frame_rate,
-                zone_start, zone_end, 'TO', side_label)
 
     _logger.info(f"[STAGE 4] Raw Zeni detection:")
     for side_code, hs_lbl, to_lbl in [('R', 'RSTRIKE', 'ROFF'), ('L', 'LSTRIKE', 'LOFF')]:
@@ -1373,12 +1261,6 @@ def detect_bilateral_gait_events(
     # STEP 2 — Remove false-positive isolated first event
     # ======================================================================
     raw = remove_false_first_event(raw, frame_rate)
-
-    # ======================================================================
-    # STEP 3 — Ensure opposite-side strike exists before terminal OFF
-    # ======================================================================
-    raw = ensure_strike_before_terminal_off(raw, traj_data, frame_rate,
-                                            zone_start, zone_end)
 
     # ======================================================================
     # STAGE 5 — Canonical Gait Event Sequence Selection

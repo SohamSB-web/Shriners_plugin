@@ -141,28 +141,12 @@ class CreateGCD_Main():
         GCDFile.write('!VideoRate' + '\n')
         GCDFile.write(str(MarkerFrameRate) + '\n')
         
-        # Extract Gait Events
-        [LeftFootStrikeEventFrames, LeftFootStrikeEventOffsets] =GetEvents("LSTRIKE",fields) #vicon.GetEvents(SubjectName,'Left','Foot Strike')
-        [LeftFootOffEventFrames, LeftFootOffEventOffsets] =GetEvents("LOFF",fields) #vicon.GetEvents(SubjectName,'Left','Foot Off')
-        [RightFootStrikeEventFrames, RightFootStrikeEventOffsets] =GetEvents("RSTRIKE",fields) #vicon.GetEvents(SubjectName,'Right','Foot Strike')
-        [RightFootOffEventFrames, RightFootOffEventOffsets] =GetEvents("ROFF",fields) #vicon.GetEvents(SubjectName,'Right','Foot Off')
-        
-        # Event frame rounding, round up if offset is more than 1/2 video frame
-        Off_Thresh = 1/(2*fields['Capture_Frequency'])
-        
-        for i in range(len(LeftFootStrikeEventFrames)):
-            if LeftFootStrikeEventOffsets[i] >= Off_Thresh:
-                LeftFootStrikeEventFrames[i] = LeftFootStrikeEventFrames[i] + 1
-        for i in range(len(LeftFootOffEventFrames)):
-            if LeftFootOffEventOffsets[i] >= Off_Thresh:
-                LeftFootOffEventFrames[i] = LeftFootOffEventFrames[i] + 1
-        for i in range(len(RightFootStrikeEventFrames)):
-            if RightFootStrikeEventOffsets[i] >= Off_Thresh:
-                RightFootStrikeEventFrames[i] = RightFootStrikeEventFrames[i] + 1
-        for i in range(len(RightFootOffEventFrames)):
-            if RightFootOffEventOffsets[i] >= Off_Thresh:
-                RightFootOffEventFrames[i] = RightFootOffEventFrames[i] + 1
-        
+        # The C3D/sidecar reader rounds each event to a marker sample once.
+        LeftFootStrikeEventFrames, _ = GetEvents("LSTRIKE", fields)
+        LeftFootOffEventFrames, _ = GetEvents("LOFF", fields)
+        RightFootStrikeEventFrames, _ = GetEvents("RSTRIKE", fields)
+        RightFootOffEventFrames, _ = GetEvents("ROFF", fields)
+
         # Function to interpolate data to gait cycles
         def ComputeGCDVariable(C3DVariableName,NumPointsPerGraph,Strike1,Strike2):
             C3DVariableX = [0 for m in range(Strike2-Strike1+1)]
@@ -213,77 +197,29 @@ class CreateGCD_Main():
                 
             return GCDVariable
         
-        def ComputeGCDVariableFP_Component(FP,FP_DeviceID,NumPointsPerGraph,Strike1,Strike2):
-            try:
-                [arrayFx, Ready, FP_FrameRate] = FP[FP_DeviceID]["Force"]["X"],[],FP[FP_DeviceID]["Frequency"]  #vicon.GetDeviceChannelGlobal(FP_DeviceID, 1, 1)
-                [arrayFy, Ready, FP_FrameRate] = FP[FP_DeviceID]["Force"]["Y"],[],FP[FP_DeviceID]["Frequency"]  #vicon.GetDeviceChannelGlobal(FP_DeviceID, 1, 2)
-                [arrayFz, Ready, FP_FrameRate] = FP[FP_DeviceID]["Force"]["Z"],[],FP[FP_DeviceID]["Frequency"]  #vicon.GetDeviceChannelGlobal(FP_DeviceID, 1, 3)
+        def ComputeGCDVariableFP_Component(FP, FP_DeviceID, NumPointsPerGraph, Strike1, Strike2):
+            plate = FP[FP_DeviceID]
+            force = np.asarray([plate["Force"][axis] for axis in "XYZ"])
+            moment_z = np.asarray(plate["Moment"]["Z"])
+            cop_x, cop_y = (np.asarray(plate["Center_of_Pressure"][axis]) for axis in "XY")
+            center = plate["WorldCenter"]
+            origin = plate["Origin"]
+            weight = float(self.valueBodyMass) * 9.81
 
-                [arrayMx, Ready, FP_FrameRate] = FP[FP_DeviceID]["Moment"]["X"],[],FP[FP_DeviceID]["Frequency"]  #vicon.GetDeviceChannelGlobal(FP_DeviceID, 2, 1)
-                [arrayMy, Ready, FP_FrameRate] = FP[FP_DeviceID]["Moment"]["Y"],[],FP[FP_DeviceID]["Frequency"]  #vicon.GetDeviceChannelGlobal(FP_DeviceID, 2, 2)
-                [arrayMz, Ready, FP_FrameRate] = FP[FP_DeviceID]["Moment"]["Z"],[],FP[FP_DeviceID]["Frequency"]  #vicon.GetDeviceChannelGlobal(FP_DeviceID, 2, 3)
+            # Cycle frames are one-based marker indices. Interpolate directly
+            # at the cycle endpoints on the analog sample axis.
+            ratio = plate["Frequency"] / MarkerFrameRate
+            cycle = np.linspace((Strike1 - 1) * ratio, (Strike2 - 1) * ratio, NumPointsPerGraph)
+            samples = np.arange(force.shape[1])
+            loaded = np.asarray(plate["Exists"], dtype=bool)
+            torque = moment_z + force[0] * (cop_y - center[1] + origin[1]) - force[1] * (cop_x - center[0] + origin[0])
+            channels = (
+                -force[0] / weight, -force[1] / weight, -force[2] / weight,
+                np.where(loaded, -torque / weight, np.nan),
+                np.where(loaded, cop_x, np.nan), np.where(loaded, cop_y, np.nan),
+            )
+            return [np.interp(cycle, samples, channel) for channel in channels]
 
-                [arrayCOPx, Ready, FP_FrameRate] = FP[FP_DeviceID]["Center_of_Pressure"]["X"],[],FP[FP_DeviceID]["Frequency"]  #vicon.GetDeviceChannelGlobal(FP_DeviceID, 3, 1)
-                [arrayCOPy, Ready, FP_FrameRate] = FP[FP_DeviceID]["Center_of_Pressure"]["Y"],[],FP[FP_DeviceID]["Frequency"]  #vicon.GetDeviceChannelGlobal(FP_DeviceID, 3, 2)
-                [arrayCOPz, Ready, FP_FrameRate] = FP[FP_DeviceID]["Center_of_Pressure"]["Z"],[],FP[FP_DeviceID]["Frequency"]  #vicon.GetDeviceChannelGlobal(FP_DeviceID, 3, 3)
-
-                FP_Origin = FP[FP_DeviceID]["Origin"]#FP.LocalT # Local Origin- Usually zero
-                FP_Center = FP[FP_DeviceID]["WorldCenter"]#FP.WorldT # Force Plate Center
-                
-                FPFrame_Strike1 = int(Strike1 * FP_FrameRate/ MarkerFrameRate)
-                FPFrame_Strike2 = int(Strike2 * FP_FrameRate/ MarkerFrameRate)
-                C3DVariable_GRFx = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_GRFy = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_GRFz = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_GRTz = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_COPx = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_COPy = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                
-                
-                for i in range(FPFrame_Strike1-1,FPFrame_Strike2): # Return reaction -ve value of force observed by Force Plate
-                    C3DVariable_GRFx[i-FPFrame_Strike1 + 1]= -(arrayFx[i]) / (self.valueBodyMass*9.81)
-                    C3DVariable_GRFy[i-FPFrame_Strike1 + 1]= -(arrayFy[i]) / (self.valueBodyMass*9.81)
-                    C3DVariable_GRFz[i-FPFrame_Strike1 + 1]= -(arrayFz[i]) / (self.valueBodyMass*9.81)
-                    
-                    Tz= (arrayMz[i] + arrayFx[i] * (arrayCOPy[i] - FP_Center[1] + FP_Origin[1]) - arrayFy[i] * (arrayCOPx[i] -FP_Center[0] + FP_Origin[0]))
-                    if i==FPFrame_Strike1-1:
-                        print(f"Tz:{Tz},frame:{FPFrame_Strike1-1}")
-                    C3DVariable_GRTz[i-FPFrame_Strike1 + 1]= -Tz / (self.valueBodyMass*9.81)
-                    
-                    C3DVariable_COPx[i-FPFrame_Strike1 + 1]= arrayCOPx[i]
-                    C3DVariable_COPy[i-FPFrame_Strike1 + 1]= arrayCOPy[i]
-                    
-                GCD_Time = np.linspace(0, NumPointsPerGraph-1 , NumPointsPerGraph)
-                C3D_Time = np.linspace(0, NumPointsPerGraph-1, (FPFrame_Strike2-FPFrame_Strike1+1))
-                
-                GCDVariable_GRFx = np.interp(GCD_Time, C3D_Time, C3DVariable_GRFx)
-                GCDVariable_GRFy = np.interp(GCD_Time, C3D_Time, C3DVariable_GRFy)
-                GCDVariable_GRFz = np.interp(GCD_Time, C3D_Time, C3DVariable_GRFz)
-                GCDVariable_GRTz = np.interp(GCD_Time, C3D_Time, C3DVariable_GRTz)
-                GCDVariable_COPx = np.interp(GCD_Time, C3D_Time, C3DVariable_COPx)
-                GCDVariable_COPy = np.interp(GCD_Time, C3D_Time, C3DVariable_COPy)
-            except:
-                FPFrame_Strike1 = int(Strike1 * FP_FrameRate/ MarkerFrameRate)
-                FPFrame_Strike2 = int(Strike2 * FP_FrameRate/ MarkerFrameRate)
-                C3DVariable_GRFx = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_GRFy = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_GRFz = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_GRTz = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_COPx = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                C3DVariable_COPy = [0 for m in range(FPFrame_Strike2-FPFrame_Strike1+1)]
-                
-                GCD_Time = np.linspace(0, NumPointsPerGraph-1 , NumPointsPerGraph)
-                C3D_Time = np.linspace(0, NumPointsPerGraph-1, (FPFrame_Strike2-FPFrame_Strike1+1))
-                
-                GCDVariable_GRFx = np.interp(GCD_Time, C3D_Time, C3DVariable_GRFx)
-                GCDVariable_GRFy = np.interp(GCD_Time, C3D_Time, C3DVariable_GRFy)
-                GCDVariable_GRFz = np.interp(GCD_Time, C3D_Time, C3DVariable_GRFz)
-                GCDVariable_GRTz = np.interp(GCD_Time, C3D_Time, C3DVariable_GRTz)
-                GCDVariable_COPx = np.interp(GCD_Time, C3D_Time, C3DVariable_COPx)
-                GCDVariable_COPy = np.interp(GCD_Time, C3D_Time, C3DVariable_COPy)
-                
-            return [GCDVariable_GRFx,GCDVariable_GRFy,GCDVariable_GRFz,GCDVariable_GRTz,GCDVariable_COPx,GCDVariable_COPy]
-            
         def WriteArrayToGCD(GCDFile, GCDVariableName, GCDVariable):
             GCDFile.write('!' + GCDVariableName + '\n')
             for i in range(len(GCDVariable)):

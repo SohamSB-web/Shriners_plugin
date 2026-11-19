@@ -394,8 +394,6 @@ class Dynamic_Main:
             arrayRPCALUY = [0 for m in range(framecount)]
             arrayRPCALUZ = [30 for m in range(framecount)]
 
-        exists = [True] * framecount
-
         for FrameNumber in range(StartFrame, EndFrame):
             # Compute Technical Coordinate System: Left Foot Segments
             if self.valueLeftFootModelCheck == "1":
@@ -475,66 +473,26 @@ class Dynamic_Main:
                 arrayRMT23HMarkerY[FrameNumber] = RightMT23HMarkerLab[1]
                 arrayRMT23HMarkerZ[FrameNumber] = RightMT23HMarkerLab[2]
 
-        if self.valueLeftFootModelCheck == "1":
-            SetTrajectory(
-                SubjectName,
-                self.LeftToeMarkerName,
-                arrayLMT23HMarkerX,
-                arrayLMT23HMarkerY,
-                arrayLMT23HMarkerZ,
-                exists,
-                fields["First Frame"],
-                fields["Last Frame"],
-                fields["initial_frame_offset"],
-            )
-            if HasTrajectory(SubjectName, self.LeftHeelMarkerName) is False:
-                LPCALx, LPCALy, LPCALz, LPCALexists = (
-                    fields[self.LeftPosteriorCalcaneusMarkerName]["X"],
-                    fields[self.LeftPosteriorCalcaneusMarkerName]["Y"],
-                    fields[self.LeftPosteriorCalcaneusMarkerName]["Z"],
-                    fields[self.LeftPosteriorCalcaneusMarkerName]["Exists"],
-                )
-                SetTrajectory(
-                    SubjectName,
-                    self.LeftHeelMarkerName,
-                    LPCALx,
-                    LPCALy,
-                    LPCALz,
-                    exists,
-                    fields["First Frame"],
-                    fields["Last Frame"],
-                )
-
-        if self.valueRightFootModelCheck == "1":
-            SetTrajectory(
-                SubjectName,
-                self.RightToeMarkerName,
-                arrayRMT23HMarkerX,
-                arrayRMT23HMarkerY,
-                arrayRMT23HMarkerZ,
-                exists,
-                fields["First Frame"],
-                fields["Last Frame"],
-                fields["initial_frame_offset"],
-            )
-            if HasTrajectory(SubjectName, self.RightHeelMarkerName) is False:
-                RPCALx, RPCALy, RPCALz, RPCALexists = (
-                    fields[self.RightPosteriorCalcaneusMarkerName]["X"],
-                    fields[self.RightPosteriorCalcaneusMarkerName]["Y"],
-                    fields[self.RightPosteriorCalcaneusMarkerName]["Z"],
-                    fields[self.RightPosteriorCalcaneusMarkerName]["Exists"],
-                )
-                SetTrajectory(
-                    SubjectName,
-                    self.RightHeelMarkerName,
-                    RPCALx,
-                    RPCALy,
-                    RPCALz,
-                    exists,
-                    fields["First Frame"],
-                    fields["Last Frame"],
-                    fields["initial_frame_offset"],
-                )
+        # Keep calibrated foot trajectories local to the C3D being processed.
+        for side, xyz in (
+            ("Left", (arrayLMT23HMarkerX, arrayLMT23HMarkerY, arrayLMT23HMarkerZ)),
+            ("Right", (arrayRMT23HMarkerX, arrayRMT23HMarkerY, arrayRMT23HMarkerZ)),
+        ):
+            if getattr(self, f"value{side}FootModelCheck") != "1":
+                continue
+            toe_name = getattr(self, f"{side}ToeMarkerName")
+            if toe_name not in fields:
+                valid = np.isfinite(xyz).all(axis=0)
+                for marker in ("FirstMetarsalBase", "FirstMetarsalHead", "FifthMetarsalHead"):
+                    name = getattr(self, f"{side}{marker}MarkerName")
+                    valid &= fields[name]["Exists"] if name in fields else False
+                valid[:StartFrame] = False
+                valid[EndFrame:] = False
+                fields[toe_name] = dict(zip(("X", "Y", "Z", "Exists"), (*xyz, valid)))
+            heel_name = getattr(self, f"{side}HeelMarkerName")
+            calcaneus_name = getattr(self, f"{side}PosteriorCalcaneusMarkerName")
+            if heel_name not in fields and calcaneus_name in fields:
+                fields[heel_name] = fields[calcaneus_name]
 
         ################################################################################################
 
@@ -4370,9 +4328,7 @@ class Dynamic_Main:
             # Create Modeled Marker- Upper calcaneus markers [name too long if Right_Upper_Posterior_Calcaneus]
             if self.valueRightFootModelCheck == "1":
                 if not "Right_Superior_Calcaneus" in ModelOutputs:
-                    self.Models.CreateModeledMarker(
-                        SubjectName, "Right_Superior_Calcaneus"
-                    )
+                    self.Models.CreateModeledMarker("Right_Superior_Calcaneus")
 
         if self.valueLeftFootModelCheck == "1" or self.valueRightFootModelCheck == "1":
             if not "Supination" in ModelOutputs:
@@ -5468,6 +5424,7 @@ class Dynamic_Main:
             FP_Origin = fields["FP"][DeviceID]["Origin"]  # Local Origin- Usually zero
             # Assumed zero for now
             FP_Center = fields["FP"][DeviceID]["WorldCenter"]  # Force Plate Center
+            contact_detected = SimForcePlate[DeviceID]["Exists"]
 
             # Force Plate data in Global coordinate system
             # This is the force from body to force plate going into the ground
@@ -5715,26 +5672,24 @@ class Dynamic_Main:
                 # clamp to the last available FP sample rather than indexing past it.
                 FP_FrameNumber = min(FP_FrameNumber, FP_MaxIndex)
 
-                # Compute Vertical Torque (Mz is dependent on COP location)
-                Tz = (
-                    arrayMz[FP_FrameNumber]
-                    + arrayFx[FP_FrameNumber]
-                    * (arrayCOPy[FP_FrameNumber] - FP_Center[1] + FP_Origin[1])
-                    - arrayFy[FP_FrameNumber]
-                    * (arrayCOPx[FP_FrameNumber] - FP_Center[0] + FP_Origin[0])
-                )
-
-                # Account for Walking Direction
-                # Compute Reaction force as opposite of force plate output
-                GRF[0] = -Direction * arrayFx[FP_FrameNumber]
-                GRF[1] = -Direction * arrayFy[FP_FrameNumber]
-                GRF[2] = -arrayFz[FP_FrameNumber]
-                GRT[2] = -Tz / 1e3  # Convert from mm to meters
-
-                # Center of Pressure is already in lab/global coordinate system
-                COP[0] = Direction * arrayCOPx[FP_FrameNumber]
-                COP[1] = Direction * arrayCOPy[FP_FrameNumber]
-                COP[2] = 0
+                # Apply the external wrench only where the measured COP is valid.
+                if contact_detected[FP_FrameNumber]:
+                    Tz = (
+                        arrayMz[FP_FrameNumber]
+                        + arrayFx[FP_FrameNumber]
+                        * (arrayCOPy[FP_FrameNumber] - FP_Center[1] + FP_Origin[1])
+                        - arrayFy[FP_FrameNumber]
+                        * (arrayCOPx[FP_FrameNumber] - FP_Center[0] + FP_Origin[0])
+                    )
+                    GRF[:] = (-Direction * arrayFx[FP_FrameNumber],
+                              -Direction * arrayFy[FP_FrameNumber], -arrayFz[FP_FrameNumber])
+                    GRT[2] = -Tz / 1e3
+                    COP[:] = (Direction * arrayCOPx[FP_FrameNumber],
+                              Direction * arrayCOPy[FP_FrameNumber], 0)
+                else:
+                    GRF[:] = 0
+                    GRT[:] = 0
+                    COP[:] = 0
 
                 ############ Compute Anatomical Coordinate Systems ###################
                 [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(
@@ -6685,6 +6640,7 @@ class Dynamic_Main:
             FP_Origin = fields["FP"][DeviceID]["Origin"]  # Local Origin- Usually zero
             # Assumed zero for now
             FP_Center = fields["FP"][DeviceID]["WorldCenter"]  # Force Plate Center
+            contact_detected = SimForcePlate[DeviceID]["Exists"]
 
             # Force Plate data in Global coordinate system
             # This is the force from body to force plate going into the ground
@@ -6910,26 +6866,24 @@ class Dynamic_Main:
                 # clamp to the last available FP sample rather than indexing past it.
                 FP_FrameNumber = min(FP_FrameNumber, FP_MaxIndex)
 
-                # Compute Vertical Torque (Mz is dependent on COP location)
-                Tz = (
-                    arrayMz[FP_FrameNumber]
-                    + arrayFx[FP_FrameNumber]
-                    * (arrayCOPy[FP_FrameNumber] - FP_Center[1] + FP_Origin[1])
-                    - arrayFy[FP_FrameNumber]
-                    * (arrayCOPx[FP_FrameNumber] - FP_Center[0] + FP_Origin[0])
-                )
-
-                # Account for Walking Direction
-                # Compute Reaction force as opposite of force plate output
-                GRF[0] = -Direction * arrayFx[FP_FrameNumber]
-                GRF[1] = -Direction * arrayFy[FP_FrameNumber]
-                GRF[2] = -arrayFz[FP_FrameNumber]
-                GRT[2] = -Tz / 1e3  # Convert from mm to meters
-
-                # Center of Pressure is already in lab/global coordinate system
-                COP[0] = Direction * arrayCOPx[FP_FrameNumber]
-                COP[1] = Direction * arrayCOPy[FP_FrameNumber]
-                COP[2] = 0
+                # Apply the external wrench only where the measured COP is valid.
+                if contact_detected[FP_FrameNumber]:
+                    Tz = (
+                        arrayMz[FP_FrameNumber]
+                        + arrayFx[FP_FrameNumber]
+                        * (arrayCOPy[FP_FrameNumber] - FP_Center[1] + FP_Origin[1])
+                        - arrayFy[FP_FrameNumber]
+                        * (arrayCOPx[FP_FrameNumber] - FP_Center[0] + FP_Origin[0])
+                    )
+                    GRF[:] = (-Direction * arrayFx[FP_FrameNumber],
+                              -Direction * arrayFy[FP_FrameNumber], -arrayFz[FP_FrameNumber])
+                    GRT[2] = -Tz / 1e3
+                    COP[:] = (Direction * arrayCOPx[FP_FrameNumber],
+                              Direction * arrayCOPy[FP_FrameNumber], 0)
+                else:
+                    GRF[:] = 0
+                    GRT[:] = 0
+                    COP[:] = 0
 
                 ############ Compute Anatomilcal Coordinate Systems ###################
                 [EPelvisTech, MidASISLab] = gait.TechCS_Pelvis_Newington(

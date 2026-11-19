@@ -160,6 +160,27 @@ def process_trial(qtm_path):
     base = os.path.splitext(os.path.basename(qtm_path))[0]
     from app.services.event_service import load_trial_events
     existing = load_trial_events(dirname, os.path.basename(qtm_path))
+    if existing and (existing["events"] or existing["meta"].get("intentional_deletion")):
+        logger.info("Keeping the existing event revision for %s", base)
+        return
+    # The store imports recognized gait labels. An unsupported manual annotation
+    # or header-only event must also survive an unattended auto-label run.
+    source = Path(qtm_path).with_suffix(".c3d")
+    if source.is_file():
+        import ezc3d
+        recording = ezc3d.c3d(str(source))
+        group = recording["parameters"].get("EVENT", {})
+        used = group.get("USED", {}).get("value", [len(group.get("LABELS", {}).get("value", []))])
+        header_labels = recording["header"]["events"]["events_label"]
+        if int(used[0]) > 0 or any(str(label).strip() for label in header_labels):
+            logger.info("Keeping existing C3D annotations for %s", base)
+            return
+    from app.services.event_sync_service import observe_session_events
+    if existing is None:
+        _, _, _, remote_events, _ = observe_session_events(dirname, [os.path.basename(qtm_path)])
+        if remote_events:
+            logger.info("Keeping events imported from the matching QTM timeline for %s", base)
+            return
     expected_revision = existing["meta"]["event_revision"] if existing else 0
     events_dir = os.path.join(dirname, "Events")
     os.makedirs(events_dir, exist_ok=True)
@@ -173,9 +194,13 @@ def process_trial(qtm_path):
             pass
     fh = logging.FileHandler(logpath, encoding="utf-8")
     fh.setFormatter(logging.Formatter("%(message)s"))
+    for handler in list(logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            logger.removeHandler(handler)
+            handler.close()
     if not logger.handlers:
-        logger.addHandler(fh)
         logger.addHandler(logging.StreamHandler())
+    logger.addHandler(fh)
 
     dir_path = os.path.dirname(qtm_path)
     session_xml = os.path.join(dir_path, "session.xml")
@@ -193,37 +218,29 @@ def process_trial(qtm_path):
 
     # ── STAGE 2: Infer marker names from field keys ──────────────────────────
     GAIT_EVENT_MARKER_NAMES = {}
-    keys = list(fields.keys())
+    marker_keys = {key.rsplit(":", 1)[-1].casefold(): key
+                   for key, marker in fields.items()
+                   if isinstance(marker, dict) and "X" in marker}
 
     def _find(primary, secondary=None):
-        secondary = secondary or []
-        for k in keys:
-            kl = k.lower()
-            for sub in primary:
-                if sub in kl:
-                    return k
-        for k in keys:
-            kl = k.lower()
-            for sub in secondary:
-                if sub in kl:
-                    return k
-        return None
+        return next((marker_keys[a] for a in primary + (secondary or [])
+                     if a in marker_keys), None)
 
     GAIT_EVENT_MARKER_NAMES['L_HEEL'] = _find(
-        ['left_heel', 'l_heel', 'lheel', 'l_fcc', 'l_calc', 'l_foot_heel', 'lhee'],
-        ['heel', 'calc'],
+        ['left_posterior_calcaneus', 'left_heel', 'l_heel', 'lheel', 'l_fcc', 'l_calc', 'l_foot_heel', 'lhee'],
+        [],
     )
     GAIT_EVENT_MARKER_NAMES['R_HEEL'] = _find(
-        ['right_heel', 'r_heel', 'rheel', 'r_fcc', 'r_calc', 'r_foot_heel', 'rhee'],
-        ['heel', 'calc'],
+        ['right_posterior_calcaneus', 'right_heel', 'r_heel', 'rheel', 'r_fcc', 'r_calc', 'r_foot_heel', 'rhee'],
+        [],
     )
     GAIT_EVENT_MARKER_NAMES['L_TOE']  = _find(
         ['left_toe', 'l_toe', 'ltoe', 'left_2nd3rd_mt_head', 'l_2nd3rd', 'l_fm1', 'l_fm2', 'l_foot_toe', 'l_mt2'],
-        ['toe', '2nd3rd', 'mt_head'],
+        [],
     )
     GAIT_EVENT_MARKER_NAMES['R_TOE']  = _find(
         ['right_toe', 'r_toe', 'rtoe', 'right_2nd3rd_mt_head', 'r_2nd3rd', 'r_fm1', 'r_fm2', 'r_foot_toe', 'r_mt2'],
-        ['toe', '2nd3rd', 'mt_head'],
+        [],
     )
     GAIT_EVENT_MARKER_NAMES['SACRUM'] = _find(['sacrum', 'sacr'], ['sac'])
     logger.info(f"[STAGE 2] Inferred marker map: {GAIT_EVENT_MARKER_NAMES}")
@@ -244,7 +261,7 @@ def process_trial(qtm_path):
             logger.warning("[STAGE 2] Sacrum marker not found and cannot synthesize.")
 
     if not GAIT_EVENT_MARKER_NAMES.get('L_TOE') or not GAIT_EVENT_MARKER_NAMES.get('R_TOE'):
-        logger.warning("[STAGE 2] Toe markers not found; ROFF/LOFF will use synthetic timing.")
+        logger.warning("[STAGE 2] Toe markers not found; events requiring those markers will be omitted.")
 
     # ── STAGE 3-6: Detection → Pairing → Zone filter → Validation ───────────
     try:
@@ -354,8 +371,7 @@ def process_trial(qtm_path):
             for v in detection_meta.get('sequence_violations', []):
                 logger.warning(f"[SEQUENCE] {v}")
 
-    # One guarded attempt; another open trial leaves this explicit operation in the outbox.
-    from app.services.event_sync_service import observe_session_events
+    # Check the same measurement before reporting synchronization status.
     _, message, _, _, info = observe_session_events(dirname, [os.path.basename(qtm_path)])
     status = info["meta"]["event_sync_status"] if info else "Events Saved"
     if "Pending" in status:

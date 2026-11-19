@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+from math import isfinite
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1611,23 +1612,24 @@ class StaticAnalysisPage(QScrollArea):
                 if w:
                     w.setText(format_meters(get_val(p_key, x_key, x_key, q_key, default="")))
 
-            # ── 3. Foot Model
-            self._left_foot_check.setChecked(get_val("valueLeftFootModelCheck") == "1")
-            self._right_foot_check.setChecked(get_val("valueRightFootModelCheck") == "1")
-            foot_map = [
-                ("left_hindfoot_varus", "valueLeftHindfootVarus"),
-                ("right_hindfoot_varus", "valueRightHindfootVarus"),
-                ("left_calcaneal_pitch", "valueLeftCalcanealPitch"),
-                ("right_calcaneal_pitch", "valueRightCalcanealPitch"),
-                ("left_hindfoot_progression", "valueLeftHindfootProgression"),
-                ("right_hindfoot_progression", "valueRightHindfootProgression"),
-                ("left_first_metatarsal_pitch", "valueLeftFirstMetatarsalPitch"),
-                ("right_first_metatarsal_pitch", "valueRightFirstMetatarsalPitch"),
-            ]
-            for widget_key, p_key in foot_map:
-                w = self._foot_inputs.get(widget_key)
-                if w:
-                    w.setText(get_val(p_key, default=""))
+            # Saved review choices take priority over recorded session defaults.
+            foot_parameters = (
+                ("hindfoot_varus", "HindfootVarus", "VarValAngle"),
+                ("calcaneal_pitch", "CalcanealPitch", "CalcanealPitch"),
+                ("hindfoot_progression", "HindfootProgression", "HindfootProgression"),
+                ("first_metatarsal_pitch", "FirstMetatarsalPitch", "1stRayPitch"),
+            )
+            for side, checkbox in (("Left", self._left_foot_check), ("Right", self._right_foot_check)):
+                for widget_key, saved_field, recorded_field in foot_parameters:
+                    key = side + recorded_field
+                    value = get_val(f"value{side}{saved_field}") or get_val("", key, key)
+                    self._foot_inputs[f"{side.lower()}_{widget_key}"].setText(value)
+                hindfoot = self._foot_inputs[f"{side.lower()}_hindfoot_varus"].text()
+                try:
+                    measured = isfinite(float(hindfoot))
+                except ValueError:
+                    measured = False
+                checkbox.setChecked(get_val(f"value{side}FootModelCheck", default="1" if measured else "0") == "1")
 
             # ── 4. Special Test Conditions
             self._left_plantigrade.setChecked(get_val("valueLeftPlantigradeCheck", default="1") == "1")

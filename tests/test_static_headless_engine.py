@@ -300,6 +300,31 @@ def test_cli_returns_complete_or_partial_status(monkeypatch, success, expected):
     assert entry.main(['--headless', '-s', 'session.xml', '-f', 'Static.qtm', '-t', 'BF']) == expected
 
 
+
+
+def test_foot_marker_aliases_prefer_exact_labels_and_stay_on_the_same_side():
+    config = SimpleNamespace(
+        valueLeftFootModelCheck='1',
+        valueRightFootModelCheck='1',
+        Left23MetatarsalHeadMarkerName='Left_2nd3rd_MT_Head.Cal',
+        Right23MetatarsalHeadMarkerName='Right_2nd3rd_MT_Head.Cal',
+        LeftFirstMetatarsalMedialBaseMarkerName='Left_1st_MT_Medial_Base.Cal',
+        RightFirstMetatarsalMedialBaseMarkerName='Right_1st_MT_Medial_Base.Cal',
+    )
+    fields = {
+        'Left_2nd3rd_MT_Head': object(),
+        'Left_1st_MT_Medial_Base.cal': object(),
+        'Right_2nd3rd_MT_Head': object(),
+        'Right_2nd3rd_MT_Head.Cal': object(),
+    }
+    exact = fields['Right_2nd3rd_MT_Head.Cal']
+    calculations._add_static_foot_marker_aliases(config, fields)
+    assert fields['Left_2nd3rd_MT_Head.Cal'] is fields['Left_2nd3rd_MT_Head']
+    assert fields['Left_1st_MT_Medial_Base.Cal'] is fields['Left_1st_MT_Medial_Base.cal']
+    assert fields['Right_2nd3rd_MT_Head.Cal'] is exact
+    assert 'Right_1st_MT_Medial_Base.Cal' not in fields
+
+
 def test_existing_processing_service_keeps_ui_responsive(clinical_copy, qapp):
     """Actual production entry point, launcher and subprocess; no simulated QTM ACKs."""
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')

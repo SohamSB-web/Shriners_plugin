@@ -51,6 +51,8 @@ def _read_c3d_event_projection(path):
         labels = group.get("LABELS", {}).get("value", [])
         contexts = group.get("CONTEXTS", {}).get("value", [])
         times = group.get("TIMES", {}).get("value", [])
+        used = int(group.get("USED", {}).get("value", [len(labels)])[0])
+        labels = labels[:used]
         if not labels:
             return None
         frequency = float(c["header"]["points"]["frame_rate"])
@@ -301,7 +303,7 @@ def save_trial_events(
             continue
         rel_f = frame_to_index(f, recording_start_frame(meta or {}))
         time_s = frame_to_time(f, freq)
-        side = ev.get("side") or ("R" if "R" in lbl else ("L" if "L" in lbl else ""))
+        side = ev.get("side") or ("R" if normalize_qtm_event_label(lbl).startswith("R") else ("L" if normalize_qtm_event_label(lbl).startswith("L") else ""))
         etype = ev.get("type") or ("STRIKE" if ("STRIKE" in lbl or "HS" in lbl) else ("OFF" if ("OFF" in lbl or "OF" in lbl) else ""))
         clean_events.append({
             **ev,
@@ -558,7 +560,8 @@ def send_events_to_qtm(events_list, frame_rate=100.0, offset=0, port=50052, tria
 
 def normalize_qtm_event_label(raw_label: str) -> str:
     """Normalize user-created or QTM-native event labels into standard clinical tokens."""
-    lbl = str(raw_label).strip().upper().replace(" ", "_").replace("-", "_")
+    from app.services.qtm_event_protocol import event_label
+    lbl = event_label(raw_label).replace(" ", "_").replace("-", "_")
 
     is_right = (
         "RIGHT" in lbl

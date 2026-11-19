@@ -1091,6 +1091,25 @@ def validate_static_markers(state):
     return {name: value for name, value in locals().items() if name != "state" and not callable(value)}
 
 
+def _add_static_foot_marker_aliases(settings, fields):
+    """Resolve supported recording labels while keeping an exact match first."""
+    for side in ("Left", "Right"):
+        if getattr(settings, f"value{side}FootModelCheck", "0") != "1":
+            continue
+        head = getattr(settings, f"{side}23MetatarsalHeadMarkerName")
+        base = getattr(settings, f"{side}FirstMetatarsalMedialBaseMarkerName")
+        for configured, alternatives in (
+            (head, (f"{side}_2nd3rd_MT_Head.Cal", f"{side}_2nd3rd_MT_Head")),
+            (base, (f"{side}_1st_MT_Medial_Base.Cal", f"{side}_1st_MT_Medial_Base.cal")),
+        ):
+            if configured not in alternatives or configured in fields:
+                continue
+            for alternate in alternatives:
+                if alternate in fields:
+                    fields[configured] = fields[alternate]
+                    break
+
+
 def load_calibration_markers(state):
     if 'SittingFootStaticDataFileName' in state: SittingFootStaticDataFileName = state['SittingFootStaticDataFileName']
     if 'StaticDataFileName' in state: StaticDataFileName = state['StaticDataFileName']
@@ -1103,6 +1122,7 @@ def load_calibration_markers(state):
     # Extract Clinical Values
     exec(open(StaticDataFileName).read())
     normalize_processing_measurements(self)
+    _add_static_foot_marker_aliases(self, fields)
 
     # For Sacral Triad Case, delete Sacral Marker Name
     # Explanation: When Sacral marker is used and exists in the UserPreferences, then
@@ -1600,7 +1620,7 @@ def load_calibration_markers(state):
         LeftASISMarker, RightASISMarker, SacralMarker
     )
 
-    return {name: value for name, value in locals().items() if name != "state" and not callable(value)}
+    return {name: value for name, value in locals().items() if name != "state" and (name == "MarkerCheck" or not callable(value))}
 
 
 def compute_joint_centers_and_technical_systems(state):
@@ -1624,7 +1644,7 @@ def compute_joint_centers_and_technical_systems(state):
     if 'LeftTibialMarker' in state: LeftTibialMarker = state['LeftTibialMarker']
     if 'LeftToeMarker' in state: LeftToeMarker = state['LeftToeMarker']
     if 'LeftUpperKADMarker' in state: LeftUpperKADMarker = state['LeftUpperKADMarker']
-    if 'MarkerCheck' in state: MarkerCheck = state['MarkerCheck']
+    MarkerCheck = state['MarkerCheck']
     if 'MidASISLab' in state: MidASISLab = state['MidASISLab']
     if 'RightASISMarker' in state: RightASISMarker = state['RightASISMarker']
     if 'RightFifthMetarsalHeadMarker' in state: RightFifthMetarsalHeadMarker = state['RightFifthMetarsalHeadMarker']
@@ -1962,6 +1982,8 @@ def compute_joint_centers_and_technical_systems(state):
 
     # Compute Technical Coordinate System: Left Foot Segments
     if self.valueLeftFootModelCheck == "1":
+        Left23MetatarsalHeadMarker = state['Left23MetatarsalHeadMarker']
+        LeftFirstMetatarsoPhalangealJointMarker = state['LeftFirstMetatarsoPhalangealJointMarker']
         LeftEHindfootTech = gait.TechCS_Hindfoot_mSHCG(
             "Left",
             LeftLateralCalcaneusMarker,
@@ -2002,6 +2024,8 @@ def compute_joint_centers_and_technical_systems(state):
 
     # Compute Technical Coordinate System: Right Foot Segments
     if self.valueRightFootModelCheck == "1":
+        Right23MetatarsalHeadMarker = state['Right23MetatarsalHeadMarker']
+        RightFirstMetatarsoPhalangealJointMarker = state['RightFirstMetatarsoPhalangealJointMarker']
         RightEHindfootTech = gait.TechCS_Hindfoot_mSHCG(
             "Right",
             RightLateralCalcaneusMarker,

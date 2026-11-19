@@ -5,8 +5,8 @@ from app.services.frame_coordinates import frame_to_time, time_to_frame, sample_
 
 
 def event_label(label):
-    text = str(label).upper().replace(" ", "_").replace("-", "_")
-    aliases = {"AUTO_RHS": "RSTRIKE", "AUTO_ROF": "ROFF", "AUTO_LHS": "LSTRIKE", "AUTO_LOF": "LOFF",
+    text = str(label).strip().upper().replace(" ", "_").replace("-", "_")
+    aliases = {"RON": "RSTRIKE", "LON": "LSTRIKE", "AUTO_RHS": "RSTRIKE", "AUTO_ROF": "ROFF", "AUTO_LHS": "LSTRIKE", "AUTO_LOF": "LOFF",
                "RIGHT_FOOT_STRIKE": "RSTRIKE", "LEFT_FOOT_STRIKE": "LSTRIKE",
                "RIGHT_FOOT_OFF": "ROFF", "LEFT_FOOT_OFF": "LOFF"}
     return aliases.get(text, text)

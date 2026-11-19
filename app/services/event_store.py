@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import time
 
 
 class EventRevisionConflict(RuntimeError):
@@ -81,9 +82,19 @@ class EventStore:
         try:
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA busy_timeout=10000")
-            db.execute("PRAGMA journal_mode=WAL")
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    if db.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+                        db.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
             db.execute("PRAGMA synchronous=FULL")
             db.executescript("""
+                BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS trials (
                     id TEXT PRIMARY KEY, session_path TEXT NOT NULL, measurement_path TEXT NOT NULL,
                     revision INTEGER NOT NULL DEFAULT 0, remote_signature TEXT,
@@ -105,7 +116,6 @@ class EventStore:
                     id INTEGER PRIMARY KEY, trial_id TEXT REFERENCES trials(id), revision INTEGER,
                     action TEXT NOT NULL, detail TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
             """)
-            db.execute("BEGIN IMMEDIATE")
             yield db
             db.commit()
         except BaseException:
@@ -127,6 +137,10 @@ class EventStore:
             db.row_factory = sqlite3.Row
             try:
                 db.execute("BEGIN")
+                # A concurrent creator can have opened the file but not yet
+                # committed its first transaction. This snapshot has no trials.
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trials'").fetchone():
+                    return None
                 return self.read(trial, db)
             finally:
                 db.close()

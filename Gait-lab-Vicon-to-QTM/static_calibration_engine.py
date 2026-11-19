@@ -186,6 +186,11 @@ def run_static_calibration(session_path, filename, testing_condition='BF', *, pr
         def calculate(function):
             state.update(function(state))
         stage(3, 'Marker QA', calculate, calculations.validate_static_markers)
+        # The headless solver also needs the trajectories derived during marker QA.
+        for command, payload in commands:
+            if command == 'SetTrajectory':
+                fields[payload['name']] = {axis: np.asarray(payload[axis]) for axis in ('X', 'Y', 'Z')}
+                fields[payload['name']]['Exists'] = payload['exists']
         stage(4, 'Calibration markers', calculate, calculations.load_calibration_markers)
         stage(4, 'Joint centers and technical systems', calculate, calculations.compute_joint_centers_and_technical_systems)
         stage(4, 'Anatomical systems and foot', calculate, calculations.compute_anatomical_systems_and_foot)
@@ -212,6 +217,7 @@ def run_static_calibration(session_path, filename, testing_condition='BF', *, pr
         progress('[offline] QTM publishing skipped; local calibration saved and validated')
     timings['total'] = perf_counter() - started
     state['StaticDataFileName'] = destination
+    state.pop('MarkerCheck', None)
     state.pop('SetTrajectory', None)
     state.pop('CreateModeledMarker', None)
     result = CalibrationResult(destination, saved_parameters, state, list(dict.fromkeys(warnings)), commands, timings, errors)

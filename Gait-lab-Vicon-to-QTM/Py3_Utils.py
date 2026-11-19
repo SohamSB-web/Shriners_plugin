@@ -560,56 +560,25 @@ def normalize_zeroes(payload,key):
     payload[key]["Y"][np.isclose(payload[key]["Y"], 0.0)] = 0.0
     payload[key]["Z"][np.isclose(payload[key]["Z"], 0.0)] = 0.0
 
+# Below the reference QTM CoP filter threshold the centre of pressure is undefined.
+COP_MIN_VERTICAL_FORCE_N = 10.0
+
+
 def ProcessForceplateData(reader):
-    # forcePlateIds = qtm.data.series.force.get_series_ids()
-    tmp = GetForcePlate()
-    n = len(reader["data"]["platform"])
+    # ezc3d resolves the plate axes, origin and corners into the same lab
+    # coordinates as the markers. A live QTM series may belong to another trial.
     payload = {}
-    # QTM returns the COP series for the whole (uncropped) measurement, while
-    # the c3d force/moment arrays start at the crop. Shift the QTM COP by the
-    # crop offset so both index the same samples; otherwise the COP is read
-    # from before the foot lands and collapses to the plate centre.
-    first_frame = reader["header"]["points"]["first_frame"]
-    point_rate = reader["parameters"]["POINT"]["RATE"]["value"][0]
-    analog_rate = reader["parameters"]["ANALOG"]["RATE"]["value"][0]
-    crop_start = int(round(first_frame * analog_rate / point_rate))
-
-    def align_to_c3d(series, target_len):
-        series = np.array(series)
-        if len(series) > target_len:
-            series = series[crop_start:crop_start + target_len]
-        return series
-
-    qids = sorted(map(lambda x: int(x), tmp.keys())) if tmp else []
-    for id in range(n):
-        qid = qids[id] if id < len(qids) else None
-        n_samples = len(reader["data"]["platform"][id]["force"][0])
-        center = np.mean(reader["data"]["platform"][id]["corners"], axis=1)
-
-        # Force components
-        force_x = -reader["data"]["platform"][id]["force"][0]
-        force_y = -reader["data"]["platform"][id]["force"][1]
-        force_z = -reader["data"]["platform"][id]["force"][2]
-
-        # Moment components
-        moment_x = reader["data"]["platform"][id]["moment"][0]
-        moment_y = reader["data"]["platform"][id]["moment"][1]
-        moment_z = -reader["data"]["platform"][id]["moment"][2]
-
-        # Center of pressure
-        if qid is not None and str(qid) in tmp and "Center_of_Pressure" in tmp[str(qid)]:
-            cop_x = align_to_c3d(tmp[str(qid)]["Center_of_Pressure"]["X"], n_samples) + center[0]
-            cop_y = -align_to_c3d(tmp[str(qid)]["Center_of_Pressure"]["Y"], n_samples) + center[1]
-            cop_z = align_to_c3d(tmp[str(qid)]["Center_of_Pressure"]["Z"], n_samples) + center[2] / 2
-            exists = tmp[str(qid)].get("Exists", [])
-            freq = tmp[str(qid)].get("Frequency", reader["parameters"]["ANALOG"]["RATE"]["value"][0])
-        else:
-            cop_data = reader["data"]["platform"][id]["center_of_pressure"]
-            cop_x = np.array(cop_data[1], dtype=float)
-            cop_y = -np.array(cop_data[0], dtype=float)
-            cop_z = -np.array(cop_data[2], dtype=float)
-            exists = [True] * n_samples
-            freq = reader["parameters"]["ANALOG"]["RATE"]["value"][0]
+    freq = reader["parameters"]["ANALOG"]["RATE"]["value"][0]
+    for id, platform in enumerate(reader["data"]["platform"]):
+        center = np.mean(platform["corners"], axis=1)
+        # DynamicMain expects the wrench exerted by the subject on the plate.
+        force_x, force_y, force_z = -np.asarray(platform["force"])
+        moment_x, moment_y, moment_z = -np.asarray(platform["moment"])
+        cop_x, cop_y, cop_z = np.array(platform["center_of_pressure"], dtype=float)
+        exists = (
+            np.isfinite([cop_x, cop_y, cop_z]).all(axis=0)
+            & (np.abs(force_z) >= COP_MIN_VERTICAL_FORCE_N)
+        ).tolist()
 
         payload[f"FP{id}"] = {
             "Force": {
