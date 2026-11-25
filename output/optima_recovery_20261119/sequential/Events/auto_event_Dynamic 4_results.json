@@ -1,0 +1,130 @@
+{
+  "events": [
+    {
+      "frame": 71,
+      "label": "RSTRIKE",
+      "time": 0.5833333333333334,
+      "relative_frame": 70,
+      "side": "R",
+      "type": "STRIKE"
+    },
+    {
+      "frame": 71,
+      "label": "LSTRIKE",
+      "time": 0.5833333333333334,
+      "relative_frame": 70,
+      "side": "L",
+      "type": "STRIKE"
+    },
+    {
+      "frame": 84,
+      "label": "ROFF",
+      "time": 0.6916666666666667,
+      "relative_frame": 83,
+      "side": "R",
+      "type": "OFF"
+    },
+    {
+      "frame": 146,
+      "label": "LOFF",
+      "time": 1.2083333333333333,
+      "relative_frame": 145,
+      "side": "L",
+      "type": "OFF"
+    },
+    {
+      "frame": 196,
+      "label": "RSTRIKE",
+      "time": 1.625,
+      "relative_frame": 195,
+      "side": "R",
+      "type": "STRIKE"
+    },
+    {
+      "frame": 196,
+      "label": "LSTRIKE",
+      "time": 1.625,
+      "relative_frame": 195,
+      "side": "L",
+      "type": "STRIKE"
+    },
+    {
+      "frame": 211,
+      "label": "ROFF",
+      "time": 1.75,
+      "relative_frame": 210,
+      "side": "R",
+      "type": "OFF"
+    },
+    {
+      "frame": 274,
+      "label": "LOFF",
+      "time": 2.275,
+      "relative_frame": 273,
+      "side": "L",
+      "type": "OFF"
+    },
+    {
+      "frame": 324,
+      "label": "RSTRIKE",
+      "time": 2.691666666666667,
+      "relative_frame": 323,
+      "side": "R",
+      "type": "STRIKE"
+    },
+    {
+      "frame": 338,
+      "label": "ROFF",
+      "time": 2.808333333333333,
+      "relative_frame": 337,
+      "side": "R",
+      "type": "OFF"
+    }
+  ],
+  "meta": {
+    "zone_frames": [
+      54,
+      393
+    ],
+    "filter_method": "temporal",
+    "raw_R_HS": 3,
+    "raw_R_TO": 3,
+    "raw_L_HS": 3,
+    "raw_L_TO": 3,
+    "raw_R_HS_frames": [
+      70,
+      195,
+      323
+    ],
+    "raw_R_TO_frames": [
+      83,
+      210,
+      337
+    ],
+    "raw_L_HS_frames": [
+      70,
+      195,
+      323
+    ],
+    "raw_L_TO_frames": [
+      20,
+      145,
+      273
+    ],
+    "pairing_valid": true,
+    "total_events": 10,
+    "sequence_valid": true,
+    "sequence_violations": [],
+    "initial_frame_offset": 0,
+    "qtm_base_frame": 1,
+    "frame_convention": "qtm_timeline_one_based",
+    "recording_start_frame": 1,
+    "total_frames": 400,
+    "frame_rate": 120.0,
+    "qtm_timeline_synced": false,
+    "manual_override": false,
+    "event_revision": 1,
+    "intentional_deletion": false,
+    "provenance": "auto_label"
+  }
+}

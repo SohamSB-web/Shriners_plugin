@@ -1,0 +1,23 @@
+
+def test_foot_volunteer_static_uses_tibial_triads_and_recorded_heels(tmp_path):
+    sessions = list(ROOT.glob(
+        'Shriners_Gait_Model*/Shriners_Gait_Model*/Data/Foot_Volunteer_11111/2026-11-17_1'
+    ))
+    if not sessions:
+        pytest.skip('Foot_Volunteer reference session is unavailable')
+    source = sessions[0]
+    calibration = 'Static_BF_Foot_Volunteer.py'
+    for name in ('session.xml', 'Static 1.c3d', calibration):
+        shutil.copy2(source / name, tmp_path / name)
+    before = hashes(tmp_path)
+    result = engine.run_static_calibration(tmp_path / 'session.xml', 'Static 1.qtm', progress=lambda _: None)
+    assert result.success
+    assert result.values['LeftTibialTriadCheck'] and result.values['RightTibialTriadCheck']
+    for side in ('Left', 'Right'):
+        labels = result.values['fields']
+        for axis in ('X', 'Y', 'Z'):
+            np.testing.assert_array_equal(labels[f'{side}_Heel'][axis], labels[f'{side}_Posterior_Calcaneus'][axis])
+        matrix = result.parameters[f'value{side}EFootAnatRelTech']
+        np.testing.assert_allclose(matrix.T @ matrix, np.eye(3), atol=1e-10)
+    assert hashes(tmp_path) == before
+

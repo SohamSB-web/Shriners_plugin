@@ -1,0 +1,75 @@
+session,trial,label,QTM_frame,zero_based_sample,time_seconds,source
+October,Dynamic 4,RSTRIKE,132,131,1.0916666666666666,marker estimate
+October,Dynamic 4,LOFF,146,145,1.2083333333333333,marker estimate
+October,Dynamic 4,LSTRIKE,196,195,1.625,marker estimate
+October,Dynamic 4,ROFF,211,210,1.75,marker estimate
+October,Dynamic 4,RSTRIKE,261,260,2.1666666666666665,marker estimate
+October,Dynamic 4,LOFF,274,273,2.275,marker estimate
+October,Dynamic 4,LSTRIKE,324,323,2.691666666666667,marker estimate
+October,Dynamic 4,ROFF,338,337,2.808333333333333,marker estimate
+November matched recording,Dynamic 4,LSTRIKE,200,199,1.6583333333333334,QTM saved
+November matched recording,Dynamic 4,ROFF,215,214,1.7833333333333334,QTM saved
+October,Dynamic 5,LSTRIKE,98,97,0.8083333333333333,marker estimate
+October,Dynamic 5,ROFF,111,110,0.9166666666666666,marker estimate
+October,Dynamic 5,RSTRIKE,161,160,1.3333333333333333,marker estimate
+October,Dynamic 5,LOFF,174,173,1.4416666666666667,marker estimate
+October,Dynamic 5,LSTRIKE,225,224,1.8666666666666667,marker estimate
+October,Dynamic 5,ROFF,238,237,1.975,marker estimate
+October,Dynamic 5,RSTRIKE,287,286,2.3833333333333333,marker estimate
+October,Dynamic 5,LOFF,301,300,2.5,marker estimate
+November matched recording,Dynamic 5,LSTRIKE,98,97,0.8083333333333333,marker estimate
+November matched recording,Dynamic 5,ROFF,111,110,0.9166666666666666,marker estimate
+November matched recording,Dynamic 5,RSTRIKE,161,160,1.3333333333333333,marker estimate
+November matched recording,Dynamic 5,LOFF,174,173,1.4416666666666667,marker estimate
+November matched recording,Dynamic 5,LSTRIKE,225,224,1.8666666666666667,marker estimate
+November matched recording,Dynamic 5,ROFF,238,237,1.975,marker estimate
+November matched recording,Dynamic 5,RSTRIKE,287,286,2.3833333333333333,marker estimate
+November matched recording,Dynamic 5,LOFF,301,300,2.5,marker estimate
+October,Dynamic 6,LSTRIKE,132,131,1.0916666666666666,marker estimate
+October,Dynamic 6,ROFF,146,145,1.2083333333333333,marker estimate
+October,Dynamic 6,RSTRIKE,193,192,1.6,marker estimate
+October,Dynamic 6,LOFF,206,205,1.7083333333333333,marker estimate
+October,Dynamic 6,LSTRIKE,257,256,2.1333333333333333,marker estimate
+October,Dynamic 6,ROFF,271,270,2.25,marker estimate
+October,Dynamic 6,RSTRIKE,320,319,2.658333333333333,marker estimate
+October,Dynamic 6,LOFF,334,333,2.775,marker estimate
+November matched recording,Dynamic 6,LSTRIKE,132,131,1.0916666666666666,marker estimate
+November matched recording,Dynamic 6,ROFF,146,145,1.2083333333333333,marker estimate
+November matched recording,Dynamic 6,RSTRIKE,193,192,1.6,marker estimate
+November matched recording,Dynamic 6,LOFF,206,205,1.7083333333333333,marker estimate
+November matched recording,Dynamic 6,LSTRIKE,257,256,2.1333333333333333,marker estimate
+November matched recording,Dynamic 6,ROFF,271,270,2.25,marker estimate
+November matched recording,Dynamic 6,RSTRIKE,320,319,2.658333333333333,marker estimate
+November matched recording,Dynamic 6,LOFF,334,333,2.775,marker estimate
+October,Dynamic 7,LSTRIKE,97,96,0.8,marker estimate
+October,Dynamic 7,ROFF,112,111,0.925,marker estimate
+October,Dynamic 7,RSTRIKE,162,161,1.3416666666666666,marker estimate
+October,Dynamic 7,LOFF,175,174,1.45,marker estimate
+October,Dynamic 7,LSTRIKE,225,224,1.8666666666666667,marker estimate
+October,Dynamic 7,ROFF,239,238,1.9833333333333334,marker estimate
+October,Dynamic 7,RSTRIKE,287,286,2.3833333333333333,marker estimate
+October,Dynamic 7,LOFF,301,300,2.5,marker estimate
+November matched recording,Dynamic 7,LSTRIKE,97,96,0.8,marker estimate
+November matched recording,Dynamic 7,ROFF,112,111,0.925,marker estimate
+November matched recording,Dynamic 7,RSTRIKE,162,161,1.3416666666666666,marker estimate
+November matched recording,Dynamic 7,LOFF,175,174,1.45,marker estimate
+November matched recording,Dynamic 7,LSTRIKE,225,224,1.8666666666666667,marker estimate
+November matched recording,Dynamic 7,ROFF,239,238,1.9833333333333334,marker estimate
+November matched recording,Dynamic 7,RSTRIKE,287,286,2.3833333333333333,marker estimate
+November matched recording,Dynamic 7,LOFF,301,300,2.5,marker estimate
+October,Dynamic 8,RSTRIKE,96,95,0.7916666666666666,marker estimate
+October,Dynamic 8,LOFF,109,108,0.9,marker estimate
+October,Dynamic 8,LSTRIKE,159,158,1.3166666666666667,marker estimate
+October,Dynamic 8,ROFF,173,172,1.4333333333333333,marker estimate
+October,Dynamic 8,RSTRIKE,222,221,1.8416666666666666,marker estimate
+October,Dynamic 8,LOFF,236,235,1.9583333333333333,marker estimate
+October,Dynamic 8,LSTRIKE,285,284,2.3666666666666667,marker estimate
+October,Dynamic 8,ROFF,298,297,2.475,marker estimate
+November matched recording,Dynamic 8,RSTRIKE,96,95,0.7916666666666666,marker estimate
+November matched recording,Dynamic 8,LOFF,109,108,0.9,marker estimate
+November matched recording,Dynamic 8,LSTRIKE,159,158,1.3166666666666667,marker estimate
+November matched recording,Dynamic 8,ROFF,173,172,1.4333333333333333,marker estimate
+November matched recording,Dynamic 8,RSTRIKE,222,221,1.8416666666666666,marker estimate
+November matched recording,Dynamic 8,LOFF,236,235,1.9583333333333333,marker estimate
+November matched recording,Dynamic 8,LSTRIKE,285,284,2.3666666666666667,marker estimate
+November matched recording,Dynamic 8,ROFF,298,297,2.475,marker estimate

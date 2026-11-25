@@ -1,0 +1,18 @@
+{
+  "events": [],
+  "meta": {
+    "frame_rate": 120.0,
+    "recording_start_frame": 301,
+    "frame_convention": "qtm_timeline_one_based",
+    "pairing_valid": true,
+    "manual_override": true,
+    "total_events": 0,
+    "initial_frame_offset": 0,
+    "event_revision": 2,
+    "intentional_deletion": true,
+    "provenance": "manual_edit",
+    "event_sync_status": "Pending QTM Sync",
+    "event_sync_error": "",
+    "projection_error": ""
+  }
+}

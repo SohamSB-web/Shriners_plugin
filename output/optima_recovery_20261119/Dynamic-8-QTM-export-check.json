@@ -1,0 +1,27 @@
+{
+  "export_bytes": 301568,
+  "marker_frames": 364,
+  "analog_samples": 3640,
+  "platforms": 1,
+  "c3d_type": 2,
+  "analog_labels": [
+    "Amti Optima OR6-7-OP-1K-ST_1_Fx",
+    "Amti Optima OR6-7-OP-1K-ST_1_Fy",
+    "Amti Optima OR6-7-OP-1K-ST_1_Fz",
+    "Amti Optima OR6-7-OP-1K-ST_1_Mx",
+    "Amti Optima OR6-7-OP-1K-ST_1_My",
+    "Amti Optima OR6-7-OP-1K-ST_1_Mz"
+  ],
+  "peak_vertical_force_N": 581.4999999999999,
+  "force_matches_older_C3D": true,
+  "moment_matches_older_C3D": true,
+  "center_of_pressure_matches_older_C3D": true,
+  "corners_matches_older_C3D": true,
+  "origin_matches_older_C3D": true,
+  "corrected_c3d": "C:\\Users\\ADMIN\\Music\\Shriners_plugin\\output\\optima_recovery_20261119\\Optima-QTM-Validation\\Dynamic 8 - generic disabled.c3d",
+  "corrected_bytes": 301568,
+  "corrected_sha256": "6df1e585fdee5b53572606d5a13943a92573ce0986ab9398358135a03a5f4c8d",
+  "modal_warning_after_disabling_generic": false,
+  "corrected_unchanged_samples_against_reference": true,
+  "qtm_offline_project_UI": "Force-plate 1 unchecked; native Optima row absent when device unavailable"
+}

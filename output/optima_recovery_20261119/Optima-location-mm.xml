@@ -1,0 +1,30 @@
+<?xml version='1.0' encoding='utf-8'?>
+<QTM_Settings>
+  <Force>
+    <Plate>
+      <Force_Plate_Index>2</Force_Plate_Index>
+      <Location>
+        <Corner1>
+          <X>508.000016</X>
+          <Y>463.999987</Y>
+          <Z>0</Z>
+        </Corner1>
+        <Corner2>
+          <X>508.000016</X>
+          <Y>0</Y>
+          <Z>0</Z>
+        </Corner2>
+        <Corner3>
+          <X>0</X>
+          <Y>0</Y>
+          <Z>0</Z>
+        </Corner3>
+        <Corner4>
+          <X>0</X>
+          <Y>463.999987</Y>
+          <Z>0</Z>
+        </Corner4>
+      </Location>
+    </Plate>
+  </Force>
+</QTM_Settings>

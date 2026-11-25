@@ -1,0 +1,40 @@
+{
+  "events": [
+    {
+      "frame": 7201,
+      "label": "LSTRIKE",
+      "time": 60.0,
+      "relative_frame": 0,
+      "side": "L",
+      "type": "STRIKE"
+    },
+    {
+      "frame": 7496,
+      "label": "LSTRIKE",
+      "time": 62.458333333333336,
+      "relative_frame": 295,
+      "side": "L",
+      "type": "STRIKE"
+    },
+    {
+      "frame": 8227,
+      "label": "LSTRIKE",
+      "time": 68.55,
+      "relative_frame": 1026,
+      "side": "L",
+      "type": "STRIKE"
+    }
+  ],
+  "meta": {
+    "frame_rate": 120.0,
+    "initial_frame_offset": 7200,
+    "pairing_valid": false,
+    "manual_override": true,
+    "total_events": 3,
+    "frame_convention": "qtm_timeline_one_based",
+    "recording_start_frame": 7201,
+    "event_revision": 1,
+    "intentional_deletion": false,
+    "provenance": "manual_edit"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "events": [
+    {
+      "id": 4,
+      "label": "LSTRIKE",
+      "time": 4.0,
+      "frame": 481,
+      "relative_frame": 180,
+      "side": "L",
+      "type": "STRIKE"
+    }
+  ],
+  "meta": {
+    "frame_rate": 120.0,
+    "recording_start_frame": 301,
+    "frame_convention": "qtm_timeline_one_based",
+    "pairing_valid": true,
+    "manual_override": true,
+    "total_events": 1,
+    "initial_frame_offset": 300,
+    "event_revision": 2,
+    "intentional_deletion": false,
+    "provenance": "qtm_accepted",
+    "total_frames": 700
+  }
+}

@@ -1,0 +1,99 @@
+[STAGE 1] File loaded: Dynamic 6.qtm | Frame rate: 120.0 fps | Total frames: 403
+[STAGE 2] Inferred marker map: {'L_HEEL': 'Left_Posterior_Calcaneus', 'R_HEEL': 'Left_Posterior_Calcaneus', 'L_TOE': 'Left_2nd3rd_MT_Head', 'R_TOE': 'Right_2nd3rd_MT_Head', 'SACRUM': None}
+[STAGE 2] Sacrum not present, creating virtual marker from PSIS
+[STAGE 2] Auto-detected AP axis: X (rangeX=4128.7, rangeY=49.6)
+[STAGE 2] Subject walking in −X direction — AP signals will be negated
+[STAGE 2] Markers fetched — R_HEEL:(403,), L_HEEL:(403,), R_TOE:(403,), L_TOE:(403,), SACRUM:(403,)
+[STAGE 3] Force plate method: temporal
+[STAGE 3] Zone: frames 50 to 390 (0.42s to 3.25s)
+[STAGE 3b] Longest contiguous window (all 5 markers): frames 0-402 (403 frames, 3.36s)
+[STAGE 3b] Adjusted zone after valid-window constraint: frames 50-390
+[STAGE 4] Running Zeni on L side...
+[STAGE 4] Running Zeni on R side...
+[STAGE 4] Raw Zeni detection:
+          RSTRIKE: 3 frames : [131, 256, 382]
+          ROFF:    3 frames : [20, 145, 270]
+          LSTRIKE: 3 frames : [131, 256, 382]
+          LOFF:    3 frames : [83, 205, 333]
+[STAGE 5] No direct 8-event alternating candidate found; using stance pairing fallback.
+[STAGE 6] Pairing check: PASS — every strike has a following off
+[SEQUENCE] Order validation: PASS
+[STAGE 3] Zone: (50, 390) method=temporal
+[STAGE 4] Raw counts: R_HS=3 R_TO=3 L_HS=3 L_TO=3
+[STAGE 5] Final event list: LOFF=2, LSTRIKE=2, ROFF=2, RSTRIKE=2
+Event transaction failed; detection was not reported saved
+Traceback (most recent call last):
+  File "C:\Users\ADMIN\Music\Shriners_plugin\Gait-lab-Vicon-to-QTM\auto_event_trigger.py", line 328, in process_trial
+    saved = save_trial_events(dirname, os.path.basename(qtm_path), serialisable,
+  File "C:\Users\ADMIN\Music\Shriners_plugin\app\services\event_service.py", line 352, in save_trial_events
+    stored = store.commit(trial_filename, data, provenance, enqueue=enqueue, expected_revision=expected_revision,
+  File "C:\Users\ADMIN\Music\Shriners_plugin\app\services\event_store.py", line 149, in commit
+    with self.transaction() as db:
+  File "C:\Users\ADMIN\anaconda3\envs\python-example\lib\contextlib.py", line 119, in __enter__
+    return next(self.gen)
+  File "C:\Users\ADMIN\Music\Shriners_plugin\app\services\event_store.py", line 84, in transaction
+    db.execute("PRAGMA journal_mode=WAL")
+sqlite3.OperationalError: database is locked
+Traceback (most recent call last):
+  File "C:\Users\ADMIN\Music\Shriners_plugin\Gait-lab-Vicon-to-QTM\auto_event_trigger.py", line 403, in <module>
+No EVENT data in c3d or sidecar JSON; using full capture range.
+dict_keys(['FP0'])
+3.3580000400543213
+403.0
+1.0
+403.0
+0.0
+0.0
+1027
+MU_VOLUNTEER
+2026-10-27
+0.0
+0.0
+Female
+$TypeName$
+$TypeName$ $InstanceNumber$
+right - labeled
+2026-10-27
+10:28:28
+Foot_Model_2
+
+0.0
+0.0
+0.0
+0.0
+0.0
+0.0
+0.0
+Dynamic
+True
+AMTI
+
+
+[GaitEvents] Force Plate Zone defined as: video frames 50 to 390  (active Fz: analog [1948-2706], video [194-270], buffer_pre=144, buffer_post=120, analog rate=1200.0 Hz, video rate=120.0 Hz)
+[STAGE 3] Zone after buffer: 50 to 390 frames (0.42s to 3.25s) | Buffer: 1.2s
+[STAGE 3b] Valid data window: frames 0-402 (403/403 frames, 3.36s) | 5 markers checked
+[GaitEvents] Auto-detected AP axis: X  (rangeX=4128.7, rangeY=49.6)
+[GaitEvents] Detected 4 Heel Strikes, 3 Toe Offs
+[GaitEvents] Auto-detected AP axis: X  (rangeX=4128.7, rangeY=49.6)
+[GaitEvents] Detected 4 Heel Strikes, 4 Toe Offs
+[STAGE 4] Raw Zeni detection:
+          RSTRIKE: 3 frames : [131, 256, 382]
+          ROFF:    3 frames : [20, 145, 270]
+          LSTRIKE: 3 frames : [131, 256, 382]
+          LOFF:    3 frames : [83, 205, 333]
+[SEQUENCE] Order validation: PASS 
+Detection results: LOFF=2, LSTRIKE=2, ROFF=2, RSTRIKE=2
+    main()
+  File "C:\Users\ADMIN\Music\Shriners_plugin\Gait-lab-Vicon-to-QTM\auto_event_trigger.py", line 400, in main
+    process_trial(path)
+  File "C:\Users\ADMIN\Music\Shriners_plugin\Gait-lab-Vicon-to-QTM\auto_event_trigger.py", line 328, in process_trial
+    saved = save_trial_events(dirname, os.path.basename(qtm_path), serialisable,
+  File "C:\Users\ADMIN\Music\Shriners_plugin\app\services\event_service.py", line 352, in save_trial_events
+    stored = store.commit(trial_filename, data, provenance, enqueue=enqueue, expected_revision=expected_revision,
+  File "C:\Users\ADMIN\Music\Shriners_plugin\app\services\event_store.py", line 149, in commit
+    with self.transaction() as db:
+  File "C:\Users\ADMIN\anaconda3\envs\python-example\lib\contextlib.py", line 119, in __enter__
+    return next(self.gen)
+  File "C:\Users\ADMIN\Music\Shriners_plugin\app\services\event_store.py", line 84, in transaction
+    db.execute("PRAGMA journal_mode=WAL")
+sqlite3.OperationalError: database is locked

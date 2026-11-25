@@ -1,0 +1,236 @@
+{
+  "source": "C:\\Users\\ADMIN\\Music\\Shriners_plugin\\Shriners_Gait_Model_PAF_v1.0\\Shriners_Gait_Model_PAF_v1.0\\Data\\Foot_Volunteer_11111\\2026-11-17_1",
+  "repaired_session": "C:\\Users\\ADMIN\\Music\\Shriners_plugin\\output\\optima_recovery_20261119\\Optima-QTM-Validation\\Data\\Foot_Volunteer_11111\\2026-11-17_1",
+  "files": {
+    "data.qpr": {
+      "original_sha256": "6daaf6bdeb30e8ea55e4d2bb9ff9874c124698dc0adf41e5a4f9b5438adf415b",
+      "copied_sha256": "6daaf6bdeb30e8ea55e4d2bb9ff9874c124698dc0adf41e5a4f9b5438adf415b"
+    },
+    "Dynamic 4.c3d": {
+      "original_sha256": "c17087f3b5c6dc5147d9db2f305cc9e8fc730f49a1142b9e5e4a26217b175e31",
+      "copied_sha256": "c17087f3b5c6dc5147d9db2f305cc9e8fc730f49a1142b9e5e4a26217b175e31"
+    },
+    "Dynamic 4.qtm": {
+      "original_sha256": "65eebb8189aee38c6b612e1b0aa7157c6ab5dfff7c2c0a8956d80d29803f59b0",
+      "copied_sha256": "e326a1f22619906d8aa8cf6770848607f71760be9b3412e393fc50308285bc31",
+      "generic_force_enabled": false,
+      "native_optima_enabled": true
+    },
+    "Dynamic 5.c3d": {
+      "original_sha256": "82a96df099da62b5af68b62fb78b83d63aba471f417e173a45bf9b700303cd18",
+      "copied_sha256": "82a96df099da62b5af68b62fb78b83d63aba471f417e173a45bf9b700303cd18"
+    },
+    "Dynamic 5.qtm": {
+      "original_sha256": "4c2dcc5e73e78a64426f97ecef9c3f229cb29adc3dacf44e07f696202912953d",
+      "copied_sha256": "5b8a00f8deedc7a584fb026485a200dc78ad609c90a5601c86c1fa0d1996b026",
+      "generic_force_enabled": false,
+      "native_optima_enabled": true
+    },
+    "Dynamic 6.c3d": {
+      "original_sha256": "747261ce0eeb19a16ffc86ce219c27e8f71bf39d2fcd723f8dd7b4c307ab105c",
+      "copied_sha256": "747261ce0eeb19a16ffc86ce219c27e8f71bf39d2fcd723f8dd7b4c307ab105c"
+    },
+    "Dynamic 6.qtm": {
+      "original_sha256": "94fc49a686cb6337ba11665d338683d0fce8e0b9a91c15d6df46f0e01de3a7a3",
+      "copied_sha256": "526e05a86523484c737f7c529f9d561a35954cd37cbd75c94fd3b5868c468023",
+      "generic_force_enabled": false,
+      "native_optima_enabled": true
+    },
+    "Dynamic 7.c3d": {
+      "original_sha256": "65a2b3bee16da132f13954c907452c61380bd48b7820a11fd31bda8d5880a57c",
+      "copied_sha256": "65a2b3bee16da132f13954c907452c61380bd48b7820a11fd31bda8d5880a57c"
+    },
+    "Dynamic 7.qtm": {
+      "original_sha256": "0acda7fffddcf60ccef3ffd89fa76e677a7ed5f555db4fad0a116453e8be8e85",
+      "copied_sha256": "22ff9d746d51e58d08038efbf931452391870f91706df940f0b58d050cbd3d2d",
+      "generic_force_enabled": false,
+      "native_optima_enabled": true
+    },
+    "Dynamic 8.c3d": {
+      "original_sha256": "cf0d5794160f657d18ae0aeab76f7abf7479421883fb6de53e827dac68e66292",
+      "copied_sha256": "cf0d5794160f657d18ae0aeab76f7abf7479421883fb6de53e827dac68e66292"
+    },
+    "Dynamic 8.qtm": {
+      "original_sha256": "835f9fa10a5948875a1c98f881c53b535b93df10e50119cf78ef68f8f5c3ab86",
+      "copied_sha256": "2eac65cd62df6c4d09220b1156b90398a42c559b62244179528ab532894e2f12",
+      "generic_force_enabled": false,
+      "native_optima_enabled": true
+    },
+    "session.xml": {
+      "original_sha256": "3328b4ab80db43670ee4b3b9fca4e157c6489ec708ec2d475d7a2311c01a5f26",
+      "copied_sha256": "3328b4ab80db43670ee4b3b9fca4e157c6489ec708ec2d475d7a2311c01a5f26"
+    },
+    "Static 1.c3d": {
+      "original_sha256": "133de34a8f2f1b10bb9bbd919713bbdc1a91b2cdd351365af9014d62c69960b8",
+      "copied_sha256": "133de34a8f2f1b10bb9bbd919713bbdc1a91b2cdd351365af9014d62c69960b8"
+    },
+    "Static 1.qtm": {
+      "original_sha256": "9954c06c4a654c84ae10bf633e994339dbe4794afec44dbf8a5adf79d4d083fd",
+      "copied_sha256": "5beeed8be72547ecf4ff2a5b6b67a9ea2ba6014a126902276595847d7a27d71d",
+      "generic_force_enabled": false,
+      "native_optima_enabled": true
+    }
+  },
+  "exports": {
+    "Dynamic 4.c3d": {
+      "marker_frames": 400,
+      "analog_samples": 4000,
+      "peak_vertical_force_N": 577.6562499999999,
+      "source_force_match": true,
+      "events": 0,
+      "bytes": 330752
+    },
+    "Dynamic 5.c3d": {
+      "marker_frames": 391,
+      "analog_samples": 3910,
+      "peak_vertical_force_N": 618.1249999999999,
+      "source_force_match": true,
+      "events": 0,
+      "bytes": 323072
+    },
+    "Dynamic 6.c3d": {
+      "marker_frames": 403,
+      "analog_samples": 4030,
+      "peak_vertical_force_N": 588.4999999999999,
+      "source_force_match": true,
+      "events": 0,
+      "bytes": 332800
+    },
+    "Dynamic 7.c3d": {
+      "marker_frames": 385,
+      "analog_samples": 3850,
+      "peak_vertical_force_N": 627.3749999999999,
+      "source_force_match": true,
+      "events": 0,
+      "bytes": 318464
+    },
+    "Dynamic 8.c3d": {
+      "marker_frames": 364,
+      "analog_samples": 3640,
+      "peak_vertical_force_N": 581.4999999999999,
+      "source_force_match": true,
+      "events": 0,
+      "bytes": 301568
+    },
+    "Static 1.c3d": {
+      "marker_frames": 80,
+      "analog_samples": 800,
+      "peak_vertical_force_N": 1.9299926757812498,
+      "source_force_match": true,
+      "events": 0,
+      "bytes": 94208
+    }
+  },
+  "batch_finished_files": 6,
+  "source_hashes_matched": [
+    "Dynamic 4.c3d",
+    "Dynamic 5.c3d",
+    "Dynamic 6.c3d",
+    "Dynamic 7.c3d",
+    "Dynamic 8.c3d",
+    "session.xml",
+    "Static 1.c3d"
+  ],
+  "source_hashes_changed": [
+    "data.qpr",
+    "Dynamic 4.qtm",
+    "Dynamic 5.qtm",
+    "Dynamic 6.qtm",
+    "Dynamic 7.qtm",
+    "Dynamic 8.qtm",
+    "Static 1.qtm"
+  ],
+  "original_recording_data_and_events_match": {
+    "Dynamic 4.qtm": {
+      "different_ole_streams": [
+        "Measurement NBC/Data Items"
+      ],
+      "source_calculate_force": {
+        "Force-plate 1": 1,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "copy_calculate_force": {
+        "Force-plate 1": 0,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "only_payload_difference_is_generic_utilized_flag": true,
+      "changed_payload_byte_offset_in_measurement_data_items": 23684
+    },
+    "Dynamic 5.qtm": {
+      "different_ole_streams": [
+        "Measurement NBC/Data Items"
+      ],
+      "source_calculate_force": {
+        "Force-plate 1": 1,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "copy_calculate_force": {
+        "Force-plate 1": 0,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "only_payload_difference_is_generic_utilized_flag": true,
+      "changed_payload_byte_offset_in_measurement_data_items": 23556
+    },
+    "Dynamic 6.qtm": {
+      "different_ole_streams": [
+        "Measurement NBC/Data Items"
+      ],
+      "source_calculate_force": {
+        "Force-plate 1": 1,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "copy_calculate_force": {
+        "Force-plate 1": 0,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "only_payload_difference_is_generic_utilized_flag": true,
+      "changed_payload_byte_offset_in_measurement_data_items": 23412
+    },
+    "Dynamic 7.qtm": {
+      "different_ole_streams": [
+        "Measurement NBC/Data Items"
+      ],
+      "source_calculate_force": {
+        "Force-plate 1": 1,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "copy_calculate_force": {
+        "Force-plate 1": 0,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "only_payload_difference_is_generic_utilized_flag": true,
+      "changed_payload_byte_offset_in_measurement_data_items": 23276
+    },
+    "Dynamic 8.qtm": {
+      "different_ole_streams": [
+        "Measurement NBC/Data Items"
+      ],
+      "source_calculate_force": {
+        "Force-plate 1": 1,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "copy_calculate_force": {
+        "Force-plate 1": 0,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "only_payload_difference_is_generic_utilized_flag": true,
+      "changed_payload_byte_offset_in_measurement_data_items": 23552
+    },
+    "Static 1.qtm": {
+      "different_ole_streams": [
+        "Measurement NBC/Data Items"
+      ],
+      "source_calculate_force": {
+        "Force-plate 1": 1,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "copy_calculate_force": {
+        "Force-plate 1": 0,
+        "Amti Optima OR6-7-OP-1K-STT 10409M": 1
+      },
+      "only_payload_difference_is_generic_utilized_flag": true,
+      "changed_payload_byte_offset_in_measurement_data_items": 24052
+    }
+  },
+  "source_hash_note": "QTM rewrote container and project-tree metadata when switching projects. Every original recording stream matches the repaired copy apart from the single generic force plate flag deliberately changed in the copy. The original C3D hashes matched."
+}

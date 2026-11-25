@@ -1,0 +1,210 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Subject Type="Participant" Filename="Foot_Volunteer_11111">
+    <Fields>
+        <ID>11111</ID>
+        <Name>Foot_Volunteer</Name>
+        <DOB>2026-11-17</DOB>
+        <Height>1.625000000</Height>
+        <BodyMass>50.000000000</BodyMass>
+        <Sex>Female</Sex>
+        <Directory_pattern>$Name$_$ID$</Directory_pattern>
+        <Measurement_pattern>$TypeName$ $InstanceNumber$</Measurement_pattern>
+        <Comments />
+        <Creation_date>2026-11-17</Creation_date>
+        <Creation_time>12:36:00</Creation_time>
+    </Fields>
+    <Session Type="Session" Filename="2026-11-17_1_2">
+        <Fields>
+            <ID>11111</ID>
+            <Name>Foot_Volunteer</Name>
+            <DOB>2026-11-17</DOB>
+            <Height>1.625000000</Height>
+            <BodyMass>50.000000000</BodyMass>
+            <Sex>Female</Sex>
+            <Directory_pattern>$Creation date$_$Session ID$</Directory_pattern>
+            <Measurement_pattern>$TypeName$ $InstanceNumber$</Measurement_pattern>
+            <Comments />
+            <Creation_date>2026-11-17</Creation_date>
+            <Creation_time>12:37:00</Creation_time>
+            <Session_ID>1</Session_ID>
+            <Operator />
+            <InterAsisDistance>0.246000007</InterAsisDistance>
+            <LeftLegLength>0.990000010</LeftLegLength>
+            <RightLegLength>0.980000019</RightLegLength>
+            <LeftKneeWidth>0.090000004</LeftKneeWidth>
+            <RightKneeWidth>0.090999998</RightKneeWidth>
+            <LeftAnkleWidth>0.064999998</LeftAnkleWidth>
+            <RightAnkleWidth>0.066000000</RightAnkleWidth>
+            <LeftAsisTrocanterDistance>0.140000001</LeftAsisTrocanterDistance>
+            <RightAsisTrocanterDistance>0.141000003</RightAsisTrocanterDistance>
+        <LeftVarValAngle>4</LeftVarValAngle><RightVarValAngle>-3</RightVarValAngle></Fields>
+        <Measurement Type="Dynamic" Filename="Dynamic 4.qtm">
+            <Fields>
+                <ID>11111</ID>
+                <Name>Foot_Volunteer</Name>
+                <DOB>2026-11-17</DOB>
+                <Height>1.625000000</Height>
+                <BodyMass>50.000000000</BodyMass>
+                <Sex>Female</Sex>
+                <Directory_pattern>$TypeName$</Directory_pattern>
+                <Measurement_pattern>$TypeName$ $InstanceNumber$</Measurement_pattern>
+                <Comments>left - labeled</Comments>
+                <Creation_date>2026-10-27</Creation_date>
+                <Creation_time>10:26:48</Creation_time>
+                <Session_ID>Foot_Model_2</Session_ID>
+                <Operator />
+                <InterAsisDistance>0.000000000</InterAsisDistance>
+                <LeftLegLength>0.000000000</LeftLegLength>
+                <RightLegLength>0.000000000</RightLegLength>
+                <LeftKneeWidth>0.000000000</LeftKneeWidth>
+                <RightKneeWidth>0.000000000</RightKneeWidth>
+                <LeftAnkleWidth>0.000000000</LeftAnkleWidth>
+                <RightAnkleWidth>0.000000000</RightAnkleWidth>
+                <LeftAsisTrocanterDistance>0.000000000</LeftAsisTrocanterDistance>
+                <RightAsisTrocanterDistance>0.000000000</RightAsisTrocanterDistance>
+                <Measurement_type>Dynamic</Measurement_type>
+                <Used>True</Used>
+            </Fields>
+        </Measurement>
+        <Measurement Type="Dynamic" Filename="Dynamic 5.qtm">
+            <Fields>
+                <ID>11111</ID>
+                <Name>Foot_Volunteer</Name>
+                <DOB>2026-11-17</DOB>
+                <Height>1.625000000</Height>
+                <BodyMass>50.000000000</BodyMass>
+                <Sex>Female</Sex>
+                <Directory_pattern>$TypeName$</Directory_pattern>
+                <Measurement_pattern>$TypeName$ $InstanceNumber$</Measurement_pattern>
+                <Comments>right - labeled</Comments>
+                <Creation_date>2026-10-27</Creation_date>
+                <Creation_time>10:28:05</Creation_time>
+                <Session_ID>Foot_Model_2</Session_ID>
+                <Operator />
+                <InterAsisDistance>0.000000000</InterAsisDistance>
+                <LeftLegLength>0.000000000</LeftLegLength>
+                <RightLegLength>0.000000000</RightLegLength>
+                <LeftKneeWidth>0.000000000</LeftKneeWidth>
+                <RightKneeWidth>0.000000000</RightKneeWidth>
+                <LeftAnkleWidth>0.000000000</LeftAnkleWidth>
+                <RightAnkleWidth>0.000000000</RightAnkleWidth>
+                <LeftAsisTrocanterDistance>0.000000000</LeftAsisTrocanterDistance>
+                <RightAsisTrocanterDistance>0.000000000</RightAsisTrocanterDistance>
+                <Measurement_type>Dynamic</Measurement_type>
+                <Used>True</Used>
+            </Fields>
+        </Measurement>
+        <Measurement Type="Dynamic" Filename="Dynamic 6.qtm">
+            <Fields>
+                <ID>11111</ID>
+                <Name>Foot_Volunteer</Name>
+                <DOB>2026-11-17</DOB>
+                <Height>1.625000000</Height>
+                <BodyMass>50.000000000</BodyMass>
+                <Sex>Female</Sex>
+                <Directory_pattern>$TypeName$</Directory_pattern>
+                <Measurement_pattern>$TypeName$ $InstanceNumber$</Measurement_pattern>
+                <Comments>right - labeled</Comments>
+                <Creation_date>2026-10-27</Creation_date>
+                <Creation_time>10:28:28</Creation_time>
+                <Session_ID>Foot_Model_2</Session_ID>
+                <Operator />
+                <InterAsisDistance>0.000000000</InterAsisDistance>
+                <LeftLegLength>0.000000000</LeftLegLength>
+                <RightLegLength>0.000000000</RightLegLength>
+                <LeftKneeWidth>0.000000000</LeftKneeWidth>
+                <RightKneeWidth>0.000000000</RightKneeWidth>
+                <LeftAnkleWidth>0.000000000</LeftAnkleWidth>
+                <RightAnkleWidth>0.000000000</RightAnkleWidth>
+                <LeftAsisTrocanterDistance>0.000000000</LeftAsisTrocanterDistance>
+                <RightAsisTrocanterDistance>0.000000000</RightAsisTrocanterDistance>
+                <Measurement_type>Dynamic</Measurement_type>
+                <Used>True</Used>
+            </Fields>
+        </Measurement>
+        <Measurement Type="Dynamic" Filename="Dynamic 7.qtm">
+            <Fields>
+                <ID>11111</ID>
+                <Name>Foot_Volunteer</Name>
+                <DOB>2026-11-17</DOB>
+                <Height>1.625000000</Height>
+                <BodyMass>50.000000000</BodyMass>
+                <Sex>Female</Sex>
+                <Directory_pattern>$TypeName$</Directory_pattern>
+                <Measurement_pattern>$TypeName$ $InstanceNumber$</Measurement_pattern>
+                <Comments>right - labeled</Comments>
+                <Creation_date>2026-10-27</Creation_date>
+                <Creation_time>10:29:16</Creation_time>
+                <Session_ID>Foot_Model_2</Session_ID>
+                <Operator />
+                <InterAsisDistance>0.000000000</InterAsisDistance>
+                <LeftLegLength>0.000000000</LeftLegLength>
+                <RightLegLength>0.000000000</RightLegLength>
+                <LeftKneeWidth>0.000000000</LeftKneeWidth>
+                <RightKneeWidth>0.000000000</RightKneeWidth>
+                <LeftAnkleWidth>0.000000000</LeftAnkleWidth>
+                <RightAnkleWidth>0.000000000</RightAnkleWidth>
+                <LeftAsisTrocanterDistance>0.000000000</LeftAsisTrocanterDistance>
+                <RightAsisTrocanterDistance>0.000000000</RightAsisTrocanterDistance>
+                <Measurement_type>Dynamic</Measurement_type>
+                <Used>True</Used>
+            </Fields>
+        </Measurement>
+        <Measurement Type="Dynamic" Filename="Dynamic 8.qtm">
+            <Fields>
+                <ID>11111</ID>
+                <Name>Foot_Volunteer</Name>
+                <DOB>2026-11-17</DOB>
+                <Height>1.625000000</Height>
+                <BodyMass>50.000000000</BodyMass>
+                <Sex>Female</Sex>
+                <Directory_pattern>$TypeName$</Directory_pattern>
+                <Measurement_pattern>$TypeName$ $InstanceNumber$</Measurement_pattern>
+                <Comments>left - labeled</Comments>
+                <Creation_date>2026-10-27</Creation_date>
+                <Creation_time>10:29:45</Creation_time>
+                <Session_ID>Foot_Model_2</Session_ID>
+                <Operator />
+                <InterAsisDistance>0.000000000</InterAsisDistance>
+                <LeftLegLength>0.000000000</LeftLegLength>
+                <RightLegLength>0.000000000</RightLegLength>
+                <LeftKneeWidth>0.000000000</LeftKneeWidth>
+                <RightKneeWidth>0.000000000</RightKneeWidth>
+                <LeftAnkleWidth>0.000000000</LeftAnkleWidth>
+                <RightAnkleWidth>0.000000000</RightAnkleWidth>
+                <LeftAsisTrocanterDistance>0.000000000</LeftAsisTrocanterDistance>
+                <RightAsisTrocanterDistance>0.000000000</RightAsisTrocanterDistance>
+                <Measurement_type>Dynamic</Measurement_type>
+                <Used>True</Used>
+            </Fields>
+        </Measurement>
+        <Measurement Type="Static" Filename="Static 1.qtm">
+            <Fields>
+                <ID>11111</ID>
+                <Name>Foot_Volunteer</Name>
+                <DOB>2026-11-17</DOB>
+                <Height>1.625000000</Height>
+                <BodyMass>50.000000000</BodyMass>
+                <Sex>Female</Sex>
+                <Directory_pattern>$TypeName$</Directory_pattern>
+                <Measurement_pattern>$TypeName$ $InstanceNumber$</Measurement_pattern>
+                <Comments />
+                <Creation_date>2026-10-27</Creation_date>
+                <Creation_time>10:18:44</Creation_time>
+                <Session_ID>Foot_Model_2</Session_ID>
+                <Operator />
+                <InterAsisDistance>0.000000000</InterAsisDistance>
+                <LeftLegLength>0.000000000</LeftLegLength>
+                <RightLegLength>0.000000000</RightLegLength>
+                <LeftKneeWidth>0.000000000</LeftKneeWidth>
+                <RightKneeWidth>0.000000000</RightKneeWidth>
+                <LeftAnkleWidth>0.000000000</LeftAnkleWidth>
+                <RightAnkleWidth>0.000000000</RightAnkleWidth>
+                <LeftAsisTrocanterDistance>0.000000000</LeftAsisTrocanterDistance>
+                <RightAsisTrocanterDistance>0.000000000</RightAsisTrocanterDistance>
+                <Measurement_type>Static</Measurement_type>
+                <Used>True</Used>
+            </Fields>
+        </Measurement>
+    </Session>
+</Subject>

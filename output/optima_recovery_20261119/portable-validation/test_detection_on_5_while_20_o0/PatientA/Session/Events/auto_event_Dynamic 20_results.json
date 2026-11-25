@@ -1,0 +1,26 @@
+{
+  "events": [
+    {
+      "id": 8,
+      "label": "LOFF",
+      "time": 2.0,
+      "frame": 241,
+      "relative_frame": -60,
+      "side": "L",
+      "type": "OFF"
+    }
+  ],
+  "meta": {
+    "frame_rate": 120.0,
+    "recording_start_frame": 301,
+    "initial_frame_offset": 300,
+    "frame_convention": "qtm_timeline_one_based",
+    "total_frames": 700,
+    "pairing_valid": true,
+    "manual_override": true,
+    "total_events": 1,
+    "event_revision": 1,
+    "intentional_deletion": false,
+    "provenance": "qtm_auto_sync"
+  }
+}

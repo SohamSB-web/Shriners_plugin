@@ -1,0 +1,35 @@
+{
+  "events": [
+    {
+      "frame": 431,
+      "label": "RSTRIKE",
+      "side": "R",
+      "type": "STRIKE",
+      "custom": {
+        "keep": true
+      },
+      "time": 3.5833333333333335,
+      "relative_frame": 130
+    },
+    {
+      "frame": 468,
+      "label": "ROFF",
+      "side": "R",
+      "type": "OFF",
+      "time": 3.8916666666666666,
+      "relative_frame": 167
+    }
+  ],
+  "meta": {
+    "frame_rate": 120.0,
+    "recording_start_frame": 301,
+    "frame_convention": "qtm_timeline_one_based",
+    "pairing_valid": true,
+    "manual_override": false,
+    "total_events": 2,
+    "initial_frame_offset": 0,
+    "event_revision": 1,
+    "intentional_deletion": false,
+    "provenance": "auto_label"
+  }
+}

@@ -1,0 +1,1 @@
+self.valueBodyMass = 72
