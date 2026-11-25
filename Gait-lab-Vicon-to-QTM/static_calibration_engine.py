@@ -110,6 +110,26 @@ def write_qtm_outputs(commands, sender=None):
     return []
 
 
+_FOOT_TRACKING_MARKERS = ('LateralCalcaneus', 'MedialCalcaneus', 'PosteriorCalcaneus',
+                          'FirstMetarsalBase', 'FirstMetarsalHead', 'FifthMetarsalHead', 'Hallux')
+
+
+def check_foot_model_markers(state):
+    """Fail early, with marker names, when the foot model is enabled without its markers."""
+    owner, fields = state['self'], state['fields']
+    problems = []
+    for side in ('Left', 'Right'):
+        if str(getattr(owner, f'value{side}FootModelCheck', '0')) != '1':
+            continue
+        names = [getattr(owner, f'{side}{marker}MarkerName', None) for marker in _FOOT_TRACKING_MARKERS]
+        missing = [name for name in names if name and not fields.get(name)]
+        if missing:
+            problems.append(f"{side} foot model is enabled, but the static trial is missing: {', '.join(missing)}")
+    if problems:
+        raise ValueError('; '.join(problems) + '. Disable the foot model for that side or use a static '
+                         'trial recorded with the foot markers.')
+
+
 def _validate_calibration(path):
     owner = SimpleNamespace()
     exec(compile(path.read_text(encoding='utf8'), str(path), 'exec'), {'self': owner, 'np': np, 'array': np.array, 'nan': np.nan})
@@ -192,6 +212,7 @@ def run_static_calibration(session_path, filename, testing_condition='BF', *, pr
                 fields[payload['name']] = {axis: np.asarray(payload[axis]) for axis in ('X', 'Y', 'Z')}
                 fields[payload['name']]['Exists'] = payload['exists']
         stage(4, 'Calibration markers', calculate, calculations.load_calibration_markers)
+        stage(4, 'Foot model markers', check_foot_model_markers, state)
         stage(4, 'Joint centers and technical systems', calculate, calculations.compute_joint_centers_and_technical_systems)
         stage(4, 'Anatomical systems and foot', calculate, calculations.compute_anatomical_systems_and_foot)
         stage(4, 'Transformation matrices and posture', calculate, calculations.compute_transforms_and_posture)
