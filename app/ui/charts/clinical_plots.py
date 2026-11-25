@@ -475,10 +475,14 @@ class ClinicalPlotCanvas(FigureCanvasQTAgg):
         force_y_limits: bool = False,
         curve_ids: List[str] | None = None,
         graph_id=None,
+        status_message: str | None = None,
         **kwargs,
     ) -> None:
         """
         Plot one or more gait-cycle traces with normative ideal range band and mean curve.
+
+        ``status_message`` (e.g. "Data unavailable") is drawn as a small,
+        centred note when an expected measurement has no source data.
         """
         ax = self.axes
         self._graph_id = graph_id if graph_id is not None else (title, y_label_top, y_label_bottom)
@@ -658,6 +662,7 @@ class ClinicalPlotCanvas(FigureCanvasQTAgg):
             )
 
         self._legend_key = legend_key
+        self._set_status_message(status_message)
         self._last_plot_kwargs = {
             "graph_id": self._graph_id,
             "curve_ids": curve_ids,
@@ -687,6 +692,7 @@ class ClinicalPlotCanvas(FigureCanvasQTAgg):
             "line_styles": line_styles,
             "legend_entries": legend_entries,
             "force_y_limits": force_y_limits,
+            "status_message": status_message,
         }
 
         layout_key = (scene_key, eff_y_min, eff_y_max, tuple(eff_y_ticks or ()),
@@ -695,6 +701,31 @@ class ClinicalPlotCanvas(FigureCanvasQTAgg):
             self.fig.tight_layout(pad=0.7)
             self._layout_key = layout_key
         self.draw_idle()
+
+    def _set_status_message(self, message: str | None) -> None:
+        """Show/hide the unobtrusive centred note (artist survives scene reuse)."""
+        artist = getattr(self, "_status_artist", None)
+        if artist is not None and artist.axes is not self.axes:
+            artist = None  # removed by axes.clear()
+        if not message:
+            if artist is not None:
+                artist.set_visible(False)
+            self._status_artist = artist
+            return
+        color = "#94A3B8" if self._is_dark else "#64748B"
+        if artist is None:
+            artist = self.axes.text(
+                0.5, 0.5, message, transform=self.axes.transAxes,
+                ha="center", va="center", fontsize=CHART_LABEL_SIZE + 0.5,
+                fontstyle="italic", fontfamily=FONT_FAMILY, zorder=6,
+                bbox=dict(boxstyle="round,pad=0.35", ec="none", alpha=0.9),
+            )
+        artist.set_text(message)
+        artist.set_color(color)
+        # Mask the zero line behind the note so it stays legible in both themes.
+        artist.get_bbox_patch().set_facecolor(self.axes.get_facecolor())
+        artist.set_visible(True)
+        self._status_artist = artist
 
     def get_data_y_extents(self) -> Tuple[float, float] | None:
         """Return the (min, max) y values across all current plot curves and normative bands."""
@@ -1243,6 +1274,46 @@ class MultiPlotGrid(QWidget):
 
     def plot_at(self, row: int, col: int, **kwargs) -> None:
         self._canvases[row][col].plot_gait_data(**kwargs)
+
+    def set_active_cells(self, mask: List[List[bool]] | None) -> None:
+        """Show only the cells a section uses.
+
+        ``mask[row][col]`` is True for a cell that holds a graph (callers pass
+        a compacted, row-by-row layout). An unused cell is hidden completely
+        (no axes, ticks, grid or background). In a partly filled row it keeps
+        its space, so graphs keep the same width instead of stretching into
+        empty columns. Rows with no graph collapse, and the freed height goes
+        to a spacer below the grid, so graph heights stay consistent across
+        sections. ``None`` shows every cell.
+        """
+        rows, cols = self._rows, self._cols
+        if mask is None:
+            mask = [[True] * cols for _ in range(rows)]
+        row_used = [any(mask[r][c] for c in range(cols)) for r in range(rows)]
+        self._active_mask = [list(r) for r in mask]
+        if not hasattr(self, "_bottom_spacer"):
+            from PySide6.QtWidgets import QSpacerItem
+            self._bottom_spacer = QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Minimum)
+            self._grid.addItem(self._bottom_spacer, rows, 0, 1, cols)
+        # Every graph row gets one share of spare height, exactly as in a full
+        # 5-row section; the shares of empty rows go to the spacer below.
+        for r in range(rows):
+            self._grid.setRowStretch(r, 1 if row_used[r] else 0)
+        self._grid.setRowStretch(rows, row_used.count(False))
+        for r in range(rows):
+            for c in range(cols):
+                canvas = self._canvases[r][c]
+                active = bool(mask[r][c])
+                policy = canvas.sizePolicy()
+                policy.setRetainSizeWhenHidden(not active and row_used[r])
+                canvas.setSizePolicy(policy)
+                if not active and getattr(canvas, "_last_plot_kwargs", None):
+                    canvas.clear_plot()
+                canvas.setVisible(active)
+
+    def is_cell_active(self, row: int, col: int) -> bool:
+        mask = getattr(self, "_active_mask", None)
+        return True if mask is None else bool(mask[row][col])
 
     def apply_theme(self, palette=None, dark: bool = False) -> None:
         for row in self._canvases:

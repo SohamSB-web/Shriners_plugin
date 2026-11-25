@@ -36,6 +36,7 @@ from app.models.data_models import GCDData, PageSettings
 from app.services.gcd_service import GCDService
 from app.services.settings_service import SettingsService
 from app.ui.charts.clinical_plots import calculate_dynamic_y_limits
+from app.ui.charts.plot_layout import availability_message, build_grid_plan
 
 logger = logging.getLogger(__name__)
 
@@ -143,14 +144,16 @@ class CasePresentationPdfService:
 
         # 2. Resolve / Load Normative Data
         if norm_data is None:
-            norm_file = (
-                Path(__file__).resolve().parent.parent.parent
-                / "MAC_CasePresentation"
-                / "TD_Ave.GCD"
-            )
-            if norm_file.is_file():
+            # Same candidates as the Case Presentation page; only TD_Run_Ave.GCD
+            # ships in MAC_CasePresentation, so TD_Ave.GCD alone left the
+            # standalone export without normative bands.
+            norm_dir = Path(__file__).resolve().parent.parent.parent / "MAC_CasePresentation"
+            for norm_file in (norm_dir / "TD_Run_Ave.GCD", norm_dir / "TD_Ave.GCD"):
+                if not norm_file.is_file():
+                    continue
                 try:
                     norm_data = gcd_svc.read_gcd(str(norm_file))
+                    break
                 except Exception as e:
                     logger.warning("Could not load normative data: %s", e)
 
@@ -370,22 +373,28 @@ class CasePresentationPdfService:
             plt.Line2D((0.05, 0.95), (0.892, 0.892), color="#E4E4E7", linewidth=0.75)
         )
 
-        # 5 rows x 3 columns plot arrangement
-        left_vars = settings.left_names or []
-        right_vars = settings.right_names or []
-        num_plots = min(max(len(left_vars), len(right_vars)), 15)
+        # 5 rows x 3 columns plot arrangement. The shared plan (same as the
+        # on-screen grid) drops unused placeholders and reflows the remaining
+        # graphs row by row, so no empty axes or gaps are created, and puts x
+        # labels on the bottom graph of each column.
+        plan = build_grid_plan(settings, rows=5, cols=3).compacted()
 
         x = GCDService.get_gait_cycle_x()
 
-        for idx in range(num_plots):
-            l_var = left_vars[idx] if idx < len(left_vars) else ""
-            r_var = right_vars[idx] if idx < len(right_vars) else ""
+        def _has_curve(gcd, var):
+            if not gcd.has_variable(var):
+                return False
+            arr = GCDService.get_variable_array(gcd, var)
+            return arr is not None and len(arr) == 101
 
-            if not l_var and not r_var:
-                continue
+        limbs = tuple(sorted({k[:1] for k in trials if k[:1] in ("L", "R")}))
 
-            row = idx // 3
-            col = idx % 3
+        for slot in plan.active_slots:
+            idx = slot.index
+            l_var = slot.left_var
+            r_var = slot.right_var
+            row = slot.row
+            col = slot.col
 
             pw = 0.270
             ph = 0.134
@@ -507,7 +516,12 @@ class CasePresentationPdfService:
                 spine.set_linewidth(0.5)
                 spine.set_color(cls.ZERO_LINE_COLOR)
 
-            if row == 4:
+            status = availability_message(slot, trials, limbs, _has_curve)
+            if status:
+                ax.text(0.5, 0.5, status, transform=ax.transAxes, ha="center", va="center",
+                        fontsize=7, fontstyle="italic", color="#71717A", zorder=6)
+
+            if plan.shows_x_labels(slot):
                 ax.set_xticks([0, 25, 50, 75, 100])
                 ax.set_xticklabels(["0%", "25%", "50%", "75%", "100%"], fontsize=6)
             else:

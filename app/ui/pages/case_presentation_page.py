@@ -41,6 +41,7 @@ from app.services.gcd_service import GCDService
 from app.services.pdf_report_service import CasePresentationPdfService
 from app.services.settings_service import SettingsService
 from app.ui.charts.clinical_plots import MultiPlotGrid
+from app.ui.charts.plot_layout import availability_message, build_grid_plan, limbs_for_side
 from app.ui.theme.design_tokens import (
     FONT_FAMILY,
     FONT_FAMILY_MONO,
@@ -1638,9 +1639,10 @@ class CasePresentationPage(QWidget):
             self._meta_badge.setVisible(bool(text))
 
         settings = self._get_page_settings()
-        left_vars = settings.left_names or []
-        right_vars = settings.right_names or []
-        num_plots = min(max(len(left_vars), len(right_vars)), 15)
+        plan = build_grid_plan(settings, rows=5, cols=3).compacted()
+        active_slots = plan.active_slots
+        num_plots = len(active_slots)
+        limbs = limbs_for_side(side)
 
         # Determine which trial keys to plot based on selected side (Left, Right, or Bilateral)
         if side == "L":
@@ -1676,32 +1678,29 @@ class CasePresentationPage(QWidget):
                 self._mean_legend_bar.setVisible(False)
 
         x = GCDService.get_gait_cycle_x()
-        # Clear only unused cells when the category actually removes a plot.
-        for idx, canvas in enumerate(self._plot_grid.get_all_canvases()):
-            has_var = False
-            if idx < num_plots:
-                lv = left_vars[idx] if idx < len(left_vars) else ""
-                rv = right_vars[idx] if idx < len(right_vars) else ""
-                has_var = bool(lv or rv)
-            if not has_var and getattr(canvas, "_last_plot_kwargs", None):
-                canvas.clear_plot()
-                canvas.draw_idle()
+        # Unused placeholders ('' in the PageSettings lists) are dropped and the
+        # remaining graphs reflow row by row (shared plot_layout); cells after
+        # the last graph are hidden instead of drawn as empty 0-1 axes.
+        self._plot_grid.set_active_cells(plan.active_mask())
 
-        for plot_idx in range(num_plots):
+        def _has_curve(gcd, var):
+            arr = GCDService.get_variable_array(gcd, var)
+            return arr is not None and len(arr) == 101
+
+        for render_no, slot in enumerate(active_slots, start=1):
             if generation != self._session_generation:
                 return
-            l_var = left_vars[plot_idx] if plot_idx < len(left_vars) else ""
-            r_var = right_vars[plot_idx] if plot_idx < len(right_vars) else ""
-            if not l_var and not r_var:
-                continue
+            plot_idx = slot.index
+            l_var = slot.left_var
+            r_var = slot.right_var
 
-            title = settings.titles[plot_idx] if plot_idx < len(settings.titles) else f"Plot {plot_idx + 1}"
+            title = slot.title or f"Plot {plot_idx + 1}"
             if show_overlay and hasattr(self, "_loading_overlay") and self._loading_overlay:
-                pct = 35 + int(((plot_idx + 1) / num_plots) * 60)
+                pct = 35 + int((render_no / num_plots) * 60)
                 self._loading_overlay.set_progress(
                     pct,
-                    f"Rendering graph {plot_idx + 1}/{num_plots}: {title}",
-                    f"{cat_title} ({plot_idx + 1}/{num_plots})",
+                    f"Rendering graph {render_no}/{num_plots}: {title}",
+                    f"{cat_title} ({render_no}/{num_plots})",
                 )
                 if generation != self._session_generation:
                     return
@@ -1876,8 +1875,11 @@ class CasePresentationPage(QWidget):
             y_max = settings.upper_limits[plot_idx] if plot_idx < len(settings.upper_limits) else 30
             y_ticks = settings.y_tick_labels[plot_idx] if plot_idx < len(settings.y_tick_labels) else None
 
-            row = plot_idx // 3
-            col = plot_idx % 3
+            row = slot.row
+            col = slot.col
+            # Expected graph whose measurement is absent from every loaded
+            # trial of the displayed limb(s): say so rather than leave it blank.
+            status = availability_message(slot, self._trial_data, limbs, _has_curve)
             if generation != self._session_generation:
                 return
             self._plot_grid.plot_at(
@@ -1902,7 +1904,8 @@ class CasePresentationPage(QWidget):
                 y_max=y_max,
                 title=title,
                 y_ticks=y_ticks,
-                show_x_labels=(row == 4),
+                show_x_labels=plan.shows_x_labels(slot),
+                status_message=status,
             )
 
         if show_overlay and hasattr(self, "_loading_overlay") and self._loading_overlay and self._loading_overlay.isVisible():

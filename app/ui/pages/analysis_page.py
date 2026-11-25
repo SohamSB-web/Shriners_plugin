@@ -252,6 +252,15 @@ class AnalysisPage(QWidget):
             return getter()
         return PageSettings()
 
+    @staticmethod
+    def _placeholder_mask(used_indices) -> list:
+        """5x3 visibility mask: True for grid indices (row-major) that hold a graph."""
+        mask = [[False] * 3 for _ in range(5)]
+        for idx in used_indices:
+            if 0 <= idx < 15:
+                mask[idx // 3][idx % 3] = True
+        return mask
+
     def _refresh_plots(self) -> None:
         """Redraw the plot grid for the current category + side."""
         cat = self._current_category
@@ -291,10 +300,15 @@ class AnalysisPage(QWidget):
         # Draw each plot in the 5×3 grid
         num_plots = min(len(var_names), 15)
         self._plot_grid.clear_all()
+        # Drop unused placeholder positions ('' variable and '' title in the
+        # PageSettings lists) and reflow the remaining graphs row by row, so
+        # there are no blank axes and no gaps; order is preserved.
+        used = [idx for idx in range(num_plots)
+                if var_names[idx] or (idx < len(settings.titles) and settings.titles[idx])]
+        self._plot_grid.set_active_cells(self._placeholder_mask(range(len(used))))
 
-        for plot_idx in range(num_plots):
-            row = plot_idx // 3
-            col = plot_idx % 3
+        for pos, plot_idx in enumerate(used):
+            row, col = divmod(pos, 3)
 
             var_name = var_names[plot_idx]
             if not var_name:
@@ -348,7 +362,7 @@ class AnalysisPage(QWidget):
                     y_label_top = parts[0].strip()
                     y_label_bottom = parts[1].strip() if len(parts) > 1 else ""
 
-            show_x = (row == 4)  # only bottom row
+            show_x = (row == (len(used) - 1 - col) // 3)  # bottom graph of each column
 
             if y_data:
                 x_arrays = [x] * len(y_data)
@@ -397,8 +411,12 @@ class AnalysisPage(QWidget):
         trial_keys = [f"{'L' if side in ('L', 'LR') else 'R'}{i}" for i in range(1, 11)]
 
         self._plot_grid.clear_all()
+        # EMG graphs fill the grid row by row like the other sections.
+        n_emg = min(len(var_names), 5)
+        self._plot_grid.set_active_cells(self._placeholder_mask(range(n_emg)))
 
-        for emg_idx in range(min(len(var_names), 5)):
+        for emg_idx in range(n_emg):
+            row, col = divmod(emg_idx, 3)
             var_name = var_names[emg_idx]
             title = settings.titles[emg_idx] if emg_idx < len(settings.titles) else var_name
 
@@ -414,14 +432,13 @@ class AnalysisPage(QWidget):
                     y_data.append(arr)
                     colors.append(palette.chart_trial_colors[i % len(palette.chart_trial_colors)])
 
-            # EMG plots go in first column only, one per row
             if y_data:
                 self._plot_grid.plot_at(
-                    emg_idx, 0,
+                    row, col,
                     x_data=[x] * len(y_data),
                     y_data=y_data,
                     colors=colors,
                     y_min=-5, y_max=5,
                     title=title,
-                    show_x_labels=(emg_idx == len(var_names) - 1),
+                    show_x_labels=(row == (n_emg - 1 - col) // 3),
                 )
