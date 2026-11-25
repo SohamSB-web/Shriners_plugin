@@ -1258,8 +1258,12 @@ class StaticAnalysisPage(QScrollArea):
         if not self._filename:
             try:
                 session, _ = self._read_session_xml(path)
-                self._filename = next((m.get("Filename") for m in session.iter("Measurement")
-                    if m.get("Filename") and m.get("Type", "").lower() == "static"), "")
+                # QTM gait templates name static types e.g. "Static FB Anterior - CGM";
+                # prefer the trial marked Used when a session holds several.
+                statics = [m for m in session.iter("Measurement")
+                           if m.get("Filename") and "static" in m.get("Type", "").lower()]
+                statics.sort(key=lambda m: m.findtext("Fields/Used") != "True")
+                self._filename = statics[0].get("Filename") if statics else ""
                 if not self._filename:
                     self._filename = next((m.get("Filename", "") for m in session.iter("Measurement")
                         if not m.get("Type") and "static" in m.get("Filename", "").lower()), "")

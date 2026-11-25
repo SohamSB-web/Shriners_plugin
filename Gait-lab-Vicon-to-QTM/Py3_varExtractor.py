@@ -278,16 +278,23 @@ def extract_fields_by_filename(xml_file_path, target_filename, is_static):
                 fields["Path"] = os.path.join(os.path.dirname(xml_file_path))
                 # fields["Bodymass"] = fields["Weight"]
 
-                fields = {
-                    **fields,
-                    **extract_c3d(
-                        os.path.join(
-                            os.path.dirname(xml_file_path),
-                            filename_attr.split(".")[0] + ".c3d",
-                        ),
-                        is_static,
-                    ),
-                }
+                c3d_path = os.path.join(
+                    os.path.dirname(xml_file_path),
+                    filename_attr.split(".")[0] + ".c3d",
+                )
+                if not os.path.isfile(c3d_path):
+                    raise FileNotFoundError(
+                        f"'{os.path.basename(c3d_path)}' has not been exported. Export the "
+                        "measurement to C3D in QTM (or run the session analysis), then process again."
+                    )
+                c3d_fields = extract_c3d(c3d_path, is_static)
+                # Without a PROCESSING Name the c3d reports "Test"; use the session's
+                # subject name, as static calibration does, so the calibration is found.
+                if c3d_fields.get("Name") == "Test":
+                    xml_name = (root.findtext("Fields/Name") or measurement.findtext("Fields/Name") or "").strip()
+                    if xml_name:
+                        c3d_fields["Name"] = xml_name
+                fields = {**fields, **c3d_fields}
 
                 return fields
 
@@ -298,6 +305,8 @@ def extract_fields_by_filename(xml_file_path, target_filename, is_static):
         print(f"Error parsing XML: {e}")
         return None
     except FileNotFoundError:
+        if os.path.isfile(xml_file_path):
+            raise  # A missing trial C3D must stop processing with its own message.
         print(f"File not found: {xml_file_path}")
         return None
 

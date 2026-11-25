@@ -50,7 +50,7 @@ from gapi import (
     GetForcePlate,
 )
 from pathlib import Path
-from Py3_Utils import SimModlOutput, ForcePlateGUI
+from Py3_Utils import SimModlOutput, ForcePlateGUI, disable_uncalibrated_foot_model
 from Py3_CreateGCD import CreateGCD_Main
 # import Vicon Nexus Subroutines
 
@@ -140,7 +140,16 @@ class Dynamic_Main:
             return MarkerDataX, MarkerDataY, MarkerDataZ, MarkerDataExists
 
         print(f"[DynamicMain] __init__ step 2: reading static file {StaticDataFileName}", flush=True)
+        if not Path(StaticDataFileName).is_file():
+            raise FileNotFoundError(
+                f"No static calibration for subject '{SubjectName}' ({Path(StaticDataFileName).name}). "
+                "Run static calibration for this session first.")
         exec(open(StaticDataFileName).read())
+        if not hasattr(self, "valueEPelvisAnatRelTech"):
+            raise ValueError(
+                f"Static calibration {Path(StaticDataFileName).name} is incomplete (no transformation "
+                "matrices). Run static calibration for this session again.")
+        disable_uncalibrated_foot_model(self)
         print("[DynamicMain] __init__ step 3: static file exec completed", flush=True)
         measurement_names = (
             "valueHeight", "valueASISdist", "valueLeftLegLength", "valueRightLegLength",

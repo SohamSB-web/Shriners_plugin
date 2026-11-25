@@ -555,6 +555,30 @@ class ForcePlateGUI:
         return self.get_selected_plates()
 
 
+_FOOT_CALIBRATION_SEGMENTS = (
+    "EHindfootAnatRelTech", "EForefootAnatRelTech", "EHalluxAnatRelTech",
+    "23MetatarsalHeadMarkerForefoot", "FirstMetatarsoPhalangealJointMarkerForefoot",
+)
+
+
+def disable_uncalibrated_foot_model(settings, warn=True):
+    """Turn off a side's foot model when its static calibration has no foot segments.
+
+    Calibrations saved with the foot model enabled on a plain-foot static trial
+    cannot drive the foot model; that side is processed as a single segment.
+    """
+    for side in ("Left", "Right"):
+        if getattr(settings, f"value{side}FootModelCheck", "0") != "1":
+            continue
+        if all(hasattr(settings, f"value{side}{name}") for name in _FOOT_CALIBRATION_SEGMENTS):
+            continue
+        setattr(settings, f"value{side}FootModelCheck", "0")
+        if warn:
+            print(f"[warning] {side} foot model is enabled, but the static calibration has no foot "
+                  f"segments; processing the {side.lower()} foot as a single segment. Re-run static "
+                  "calibration to refresh it.", flush=True)
+
+
 def normalize_zeroes(payload,key):
     payload[key]["X"][np.isclose(payload[key]["X"], 0.0)] = 0.0
     payload[key]["Y"][np.isclose(payload[key]["Y"], 0.0)] = 0.0

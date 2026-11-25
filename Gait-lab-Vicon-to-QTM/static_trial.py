@@ -23,9 +23,13 @@ def load_static_trial(session_path, filename):
                     selected.suffix.lower() == '.c3d' and Path(m.get('Filename', '')).stem == selected.stem]
     if len(measurements) != 1:
         raise ValueError(f"Expected one XML measurement for {filename!r}; found {len(measurements)}")
-    if measurements[0].get('Type', 'Static').lower() != 'static':
+    # QTM gait templates name static types e.g. "Static FB Anterior - CGM".
+    if 'static' not in measurements[0].get('Type', 'Static').lower():
         raise ValueError(f'Selected measurement is not Static: {filename}')
     stem = selected.stem
+    if not (xml.parent / (stem + '.c3d')).is_file():
+        raise FileNotFoundError(f"'{stem}.c3d' has not been exported. Export the measurement to C3D "
+                                f"in QTM (or run the session analysis), then process again.")
     trial_path = (xml.parent / (stem + '.c3d')).resolve(strict=True)
     if trial_path.parent != xml.parent:
         raise ValueError("Static C3D resolves outside the selected session")

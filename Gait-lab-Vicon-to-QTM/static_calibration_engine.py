@@ -114,16 +114,37 @@ _FOOT_TRACKING_MARKERS = ('LateralCalcaneus', 'MedialCalcaneus', 'PosteriorCalca
                           'FirstMetarsalBase', 'FirstMetarsalHead', 'FifthMetarsalHead', 'Hallux')
 
 
+def _disable_foot_model(state, side):
+    """Persist the fallback so dynamic processing does not expect foot segments."""
+    setattr(state['self'], f'value{side}FootModelCheck', '0')
+    if 'inputs' in state:
+        state['inputs'][f'self.{side}FootModelCheck'] = 0
+    path = Path(state['StaticDataFileName'])
+    prefix = f'self.value{side}FootModelCheck ='
+    lines = path.read_text(encoding='utf8').splitlines(keepends=True)
+    path.write_text(''.join(f"{prefix} '0'\n" if line.startswith(prefix) else line for line in lines),
+                    encoding='utf8')
+
+
 def check_foot_model_markers(state):
-    """Fail early, with marker names, when the foot model is enabled without its markers."""
+    """Fail early, with marker names, when the foot model is enabled without its markers.
+
+    A side with none of its foot markers is a plain-foot static trial, so that side
+    falls back to the single-segment foot with a warning instead of failing.
+    """
     owner, fields = state['self'], state['fields']
     problems = []
     for side in ('Left', 'Right'):
         if str(getattr(owner, f'value{side}FootModelCheck', '0')) != '1':
             continue
-        names = [getattr(owner, f'{side}{marker}MarkerName', None) for marker in _FOOT_TRACKING_MARKERS]
-        missing = [name for name in names if name and not fields.get(name)]
-        if missing:
+        names = [name for name in (getattr(owner, f'{side}{marker}MarkerName', None)
+                                   for marker in _FOOT_TRACKING_MARKERS) if name]
+        missing = [name for name in names if not fields.get(name)]
+        if missing and len(missing) == len(names):
+            _disable_foot_model(state, side)
+            state['warnings'].append(f'{side} foot model was enabled, but the static trial has no foot-model '
+                                     f'markers; the {side.lower()} foot was calibrated as a single segment.')
+        elif missing:
             problems.append(f"{side} foot model is enabled, but the static trial is missing: {', '.join(missing)}")
     if problems:
         raise ValueError('; '.join(problems) + '. Disable the foot model for that side or use a static '

@@ -40,7 +40,7 @@ from pyside6_compat import tk, ttk, messagebox
 
 from Py3_varExtractor import extract_fields_by_filename     ## Python 3.x
 from gapi import GetEvents
-from Py3_Utils import GetTrajectoryAtFrame,GetForcePlate
+from Py3_Utils import GetTrajectoryAtFrame,GetForcePlate,disable_uncalibrated_foot_model
 #import Vicon Nexus Subroutines
 #import ViconNexus
 vicon = None
@@ -90,7 +90,8 @@ class CreateGCD_Main():
 
 
         self.ModelOutputs=fields['Points']+ model.getContents()
-        exec(open(StaticDataFileName).read()) 
+        exec(open(StaticDataFileName).read())
+        disable_uncalibrated_foot_model(self, warn=False)  # DynamicMain already warned
         measurement_names = (
             "valueHeight", "valueASISdist", "valueLeftLegLength", "valueRightLegLength",
             "valueLeftKneeWidth", "valueRightKneeWidth", "valueLeftAnkleWidth",
